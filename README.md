@@ -4,6 +4,10 @@
 
 This system is a contrastive learning defect generation tool based on Stable Diffusion. It can generate defects on defect-free images guided by defective samples. The system leverages attention mechanism optimization and feature alignment techniques to achieve high-quality defect generation.
 
+<span style="color: red"> Some results of this research could be found in:</span>
+https://drive.google.com/file/d/1FEvOEMTT9A-Ykt7jTK17nSAblMLfGHZa/view
+
+
 ## 🔧 System Requirements
 
 ### Hardware Requirements
