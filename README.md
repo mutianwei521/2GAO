@@ -1,4 +1,4 @@
-# Contrastive Learning Defect Generation System - Installation and User Guide
+# 2-GAO： A Contrastive Learning Defect Generation System - Installation and User Guide
 
 ## 📋 System Overview
 
