@@ -11,7 +11,7 @@ This system is a contrastive learning defect generation tool based on Stable Dif
 - [/outputsResults](https://github.com/mutianwei521/2GAO/tree/main/outputsResults)
 
 ### 🏗️ Network Architecture
-![Overall Network Architecture](paper/figures/2gao_03.png)
+![Overall Network Architecture](paper/2gao_03.png)
 *Figure: The overall framework consists of five stages: (1) VAE Encoding, (2) IoA Alignment, (3) Forward Diffusion, (4) Attention-Guided Reverse Optimization, and (5) Decoding.*
 
 ---
