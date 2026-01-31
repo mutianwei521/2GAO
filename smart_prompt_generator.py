@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """
-智能prompt生成器
-根据物体类别和选择的缺陷类型生成智能prompt
+Smart Prompt Generator
+Generates intelligent prompts based on object category and selected defect types
 """
 
+# ==============================================================================
+# [Prompt Engineering Module]
+# Manages domain-specific vocabulary (product/defect tokens) and constructs
+# semantically precise prompts for the diffusion model
+# ==============================================================================
 def generate_smart_prompt(category, selected_bad_info):
-    """根据物体类别和选择的缺陷类型生成智能prompt"""
+    """Generate intelligent prompt based on object category and selected defect types"""
 
     # 预定义的产品词汇（包含imageMVTEC中的所有产品名字）
     product_tokens = {
@@ -26,64 +31,64 @@ def generate_smart_prompt(category, selected_bad_info):
         "zipper": "zipper"
     }
     
-    # 预定义的异常词汇及其变体，包括MVTEC的所有缺陷类型（combined改为damage）
+    # Predefined anomaly vocabulary and variants, including all MVTec defect types (combined -> damage)
     anomaly_tokens = {
-        # bottle (3种缺陷)
+        # bottle (3 defect types)
         "broken_large": "broken_large",
         "broken_small": "broken_small",
         "contamination": "contamination",
 
-        # cable (8种缺陷)
+        # cable (8 defect types)
         "bent_wire": "bent_wire",
         "cable_swap": "cable_swap",
-        "combined": "damage",  # 特殊处理：combined -> damage
+        "combined": "damage",  # Special handling: combined -> damage
         "cut_inner_insulation": "cut_inner_insulation",
         "cut_outer_insulation": "cut_outer_insulation",
         "missing_cable": "missing_cable",
         "missing_wire": "missing_wire",
         "poke_insulation": "poke_insulation",
 
-        # capsule (5种缺陷)
+        # capsule (5 defect types)
         "crack": "crack",
         "faulty_imprint": "faulty_imprint",
         "poke": "poke",
         "scratch": "scratch",
         "squeeze": "squeeze",
 
-        # carpet (5种缺陷)
+        # carpet (5 defect types)
         "color": "color",
         "cut": "cut",
         "hole": "hole",
         "metal_contamination": "metal_contamination",
         "thread": "thread",
 
-        # grid (5种缺陷)
+        # grid (5 defect types)
         "bent": "bent",
         "broken": "broken",
         "glue": "glue",
         "metal_contamination": "metal_contamination",
         "thread": "thread",
 
-        # hazelnut (4种缺陷)
+        # hazelnut (4 defect types)
         "crack": "crack",
         "cut": "cut",
         "hole": "hole",
         "print": "print",
 
-        # leather (5种缺陷)
+        # leather (5 defect types)
         "color": "color",
         "cut": "cut",
         "fold": "fold",
         "glue": "glue",
         "poke": "poke",
 
-        # metal_nut (4种缺陷)
+        # metal_nut (4 defect types)
         "bent": "bent",
         "color": "color",
         "flip": "flip",
         "scratch": "scratch",
 
-        # pill (6种缺陷)
+        # pill (6 defect types)
         "color": "color",
         "contamination": "contamination",
         "crack": "crack",
@@ -91,37 +96,37 @@ def generate_smart_prompt(category, selected_bad_info):
         "pill_type": "pill_type",
         "scratch": "scratch",
 
-        # screw (5种缺陷)
+        # screw (5 defect types)
         "manipulated_front": "manipulated_front",
         "scratch_head": "scratch_head",
         "scratch_neck": "scratch_neck",
         "thread_side": "thread_side",
         "thread_top": "thread_top",
 
-        # tile (5种缺陷)
+        # tile (5 defect types)
         "crack": "crack",
         "glue_strip": "glue_strip",
         "gray_stroke": "gray_stroke",
         "oil": "oil",
         "rough": "rough",
 
-        # toothbrush (1种缺陷)
+        # toothbrush (1 defect type)
         "defective": "defective",
 
-        # transistor (4种缺陷)
+        # transistor (4 defect types)
         "bent_lead": "bent_lead",
         "cut_lead": "cut_lead",
         "damaged_case": "damaged_case",
         "misplaced": "misplaced",
 
-        # wood (5种缺陷)
+        # wood (5 defect types)
         "color": "color",
-        "combined": "damage",  # 特殊处理：combined -> damage
+        "combined": "damage",  # Special handling: combined -> damage
         "hole": "hole",
         "liquid": "liquid",
         "scratch": "scratch",
 
-        # zipper (5种缺陷)
+        # zipper (5 defect types)
         "broken_teeth": "broken_teeth",
         "fabric_border": "fabric_border",
         "fabric_interior": "fabric_interior",
@@ -130,16 +135,16 @@ def generate_smart_prompt(category, selected_bad_info):
         "squeezed_teeth": "squeezed_teeth"
     }
     
-    # 获取产品token
+    # Get product token
     product_token = product_tokens.get(category, category)
 
-    # 提取所有缺陷类型并映射为anomaly tokens
+    # Extract all defect types and map to anomaly tokens
     anomaly_token_list = []
     defect_types = []
 
     for bad_info in selected_bad_info:
         subfolder = bad_info['subfolder']
-        # 获取对应的anomaly token
+        # Get corresponding anomaly token
         anomaly_token = anomaly_tokens.get(subfolder, subfolder)
 
         if anomaly_token not in anomaly_token_list:
@@ -148,17 +153,17 @@ def generate_smart_prompt(category, selected_bad_info):
         if subfolder not in defect_types:
             defect_types.append(subfolder)
 
-    # 生成最终prompt：产品名 + 所有缺陷类型
-    # 格式：[product_token] [anomaly_token1] [anomaly_token2] ...
+    # Generate final prompt: product name + all defect types
+    # Format: [product_token] [anomaly_token1] [anomaly_token2] ...
     all_anomaly_tokens = " ".join(anomaly_token_list)
     prompt = f"{product_token} {all_anomaly_tokens}"
 
     return prompt, defect_types, anomaly_token_list
 
 def generate_individual_prompts(category, selected_bad_info):
-    """为每个缺陷图生成单独的prompt"""
+    """Generate individual prompts for each defect image"""
 
-    # 预定义的产品词汇
+    # Predefined product vocabulary
     product_tokens = {
         "bottle": "bottle",
         "cable": "cable",
@@ -177,64 +182,64 @@ def generate_individual_prompts(category, selected_bad_info):
         "zipper": "zipper"
     }
 
-    # 预定义的异常词汇及其变体，包括MVTEC的所有缺陷类型（combined改为damage）
+    # Predefined anomaly vocabulary and variants, including all MVTec defect types (combined -> damage)
     anomaly_tokens = {
-        # bottle (3种缺陷)
+        # bottle (3 defect types)
         "broken_large": "broken_large",
         "broken_small": "broken_small",
         "contamination": "contamination",
 
-        # cable (8种缺陷)
+        # cable (8 defect types)
         "bent_wire": "bent_wire",
         "cable_swap": "cable_swap",
-        "combined": "damage",  # 特殊处理：combined -> damage
+        "combined": "damage",  # Special handling: combined -> damage
         "cut_inner_insulation": "cut_inner_insulation",
         "cut_outer_insulation": "cut_outer_insulation",
         "missing_cable": "missing_cable",
         "missing_wire": "missing_wire",
         "poke_insulation": "poke_insulation",
 
-        # capsule (5种缺陷)
+        # capsule (5 defect types)
         "crack": "crack",
         "faulty_imprint": "faulty_imprint",
         "poke": "poke",
         "scratch": "scratch",
         "squeeze": "squeeze",
 
-        # carpet (5种缺陷)
+        # carpet (5 defect types)
         "color": "color",
         "cut": "cut",
         "hole": "hole",
         "metal_contamination": "metal_contamination",
         "thread": "thread",
 
-        # grid (5种缺陷)
+        # grid (5 defect types)
         "bent": "bent",
         "broken": "broken",
         "glue": "glue",
         "metal_contamination": "metal_contamination",
         "thread": "thread",
 
-        # hazelnut (4种缺陷)
+        # hazelnut (4 defect types)
         "crack": "crack",
         "cut": "cut",
         "hole": "hole",
         "print": "print",
 
-        # leather (5种缺陷)
+        # leather (5 defect types)
         "color": "color",
         "cut": "cut",
         "fold": "fold",
         "glue": "glue",
         "poke": "poke",
 
-        # metal_nut (4种缺陷)
+        # metal_nut (4 defect types)
         "bent": "bent",
         "color": "color",
         "flip": "flip",
         "scratch": "scratch",
 
-        # pill (6种缺陷)
+        # pill (6 defect types)
         "color": "color",
         "contamination": "contamination",
         "crack": "crack",
@@ -242,37 +247,37 @@ def generate_individual_prompts(category, selected_bad_info):
         "pill_type": "pill_type",
         "scratch": "scratch",
 
-        # screw (5种缺陷)
+        # screw (5 defect types)
         "manipulated_front": "manipulated_front",
         "scratch_head": "scratch_head",
         "scratch_neck": "scratch_neck",
         "thread_side": "thread_side",
         "thread_top": "thread_top",
 
-        # tile (5种缺陷)
+        # tile (5 defect types)
         "crack": "crack",
         "glue_strip": "glue_strip",
         "gray_stroke": "gray_stroke",
         "oil": "oil",
         "rough": "rough",
 
-        # toothbrush (1种缺陷)
+        # toothbrush (1 defect type)
         "defective": "defective",
 
-        # transistor (4种缺陷)
+        # transistor (4 defect types)
         "bent_lead": "bent_lead",
         "cut_lead": "cut_lead",
         "damaged_case": "damaged_case",
         "misplaced": "misplaced",
 
-        # wood (5种缺陷)
+        # wood (5 defect types)
         "color": "color",
-        "combined": "damage",  # 特殊处理：combined -> damage
+        "combined": "damage",  # Special handling: combined -> damage
         "hole": "hole",
         "liquid": "liquid",
         "scratch": "scratch",
 
-        # zipper (5种缺陷)
+        # zipper (5 defect types)
         "broken_teeth": "broken_teeth",
         "fabric_border": "fabric_border",
         "fabric_interior": "fabric_interior",
@@ -281,20 +286,20 @@ def generate_individual_prompts(category, selected_bad_info):
         "squeezed_teeth": "squeezed_teeth"
     }
 
-    # 获取产品token
+    # Get product token
     product_token = product_tokens.get(category, category)
 
-    # 为每个缺陷图生成单独的prompt
+    # Generate individual prompt for each defect image
     individual_prompts = []
 
     for bad_info in selected_bad_info:
         subfolder = bad_info['subfolder']
         filename = bad_info['filename']
 
-        # 获取对应的anomaly token
+        # Get corresponding anomaly token
         anomaly_token = anomaly_tokens.get(subfolder, subfolder)
 
-        # 生成单独的prompt
+        # Generate individual prompt
         individual_prompt = f"{product_token} {anomaly_token}"
 
         individual_prompts.append({
@@ -307,12 +312,12 @@ def generate_individual_prompts(category, selected_bad_info):
     return individual_prompts
 
 def test_smart_prompt_generation():
-    """测试智能prompt生成功能"""
+    """Test smart prompt generation functionality"""
 
     print("🧠 Testing Smart Prompt Generation (New Version)")
     print("=" * 60)
 
-    # 测试用例
+    # Test cases
     test_cases = [
         {
             "category": "bottle",
@@ -365,7 +370,7 @@ def test_smart_prompt_generation():
         print(f"\n[PARSE] Test Case {i+1}: {test_case['category']}")
         print(f"   Defect info: {test_case['selected_bad_info']}")
 
-        # 测试组合prompt生成
+        # Test combined prompt generation
         combined_prompt, defect_types, anomaly_tokens = generate_smart_prompt(
             test_case['category'],
             test_case['selected_bad_info']
@@ -374,7 +379,7 @@ def test_smart_prompt_generation():
         print(f"   [TEST] Combined prompt: '{combined_prompt}'")
         print(f"   [TEST] Expected: '{test_case['expected_combined']}'")
 
-        # 测试单独prompt生成
+        # Test individual prompt generation
         individual_prompts = generate_individual_prompts(
             test_case['category'],
             test_case['selected_bad_info']
@@ -384,11 +389,11 @@ def test_smart_prompt_generation():
         for j, prompt_info in enumerate(individual_prompts):
             print(f"      {j+1}. {prompt_info['subfolder']}: '{prompt_info['prompt']}'")
 
-        # 验证组合prompt
+        # Verify combined prompt
         combined_success = (combined_prompt == test_case['expected_combined'])
         print(f"   [RESULT] Combined prompt: {'PASS' if combined_success else 'FAIL'}")
 
-        # 验证单独prompts
+        # Verify individual prompts
         individual_success = True
         expected_individual = test_case['expected_individual']
         if len(individual_prompts) == len(expected_individual):

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-UNet注意力热力图提取器
-提取SD模型中UNet的注意力机制，生成anomaly tokens和缺陷图组合的热力图
+UNet Attention Heatmap Extractor
+Extracts attention mechanism from UNet in SD model, generates heatmaps for anomaly tokens and defect image combinations
 """
 
 import torch
@@ -14,44 +14,44 @@ import os
 from typing import Dict, List, Tuple, Optional
 import cv2
 
-# Nature期刊标准配色方案
+# Nature journal standard color scheme
 NATURE_COLORS = {
-    'primary': '#1f77b4',      # 蓝色 - 主要数据
-    'secondary': '#ff7f0e',    # 橙色 - 次要数据
-    'success': '#2ca02c',      # 绿色 - 成功/正向
-    'danger': '#d62728',       # 红色 - 危险/负向
-    'warning': '#ff7f0e',      # 橙色 - 警告
-    'info': '#17a2b8',         # 青色 - 信息
-    'light': '#f8f9fa',        # 浅灰 - 背景
-    'dark': '#343a40',         # 深灰 - 文字
-    'purple': '#9467bd',       # 紫色 - 特殊标记
-    'brown': '#8c564b',        # 棕色 - 对比
-    'pink': '#e377c2',         # 粉色 - 高亮
-    'gray': '#7f7f7f',         # 灰色 - 中性
-    'olive': '#bcbd22',        # 橄榄绿 - 自然
-    'cyan': '#17becf'          # 青蓝 - 清新
+    'primary': '#1f77b4',      # Blue - primary data
+    'secondary': '#ff7f0e',    # Orange - secondary data
+    'success': '#2ca02c',      # Green - success/positive
+    'danger': '#d62728',       # Red - danger/negative
+    'warning': '#ff7f0e',      # Orange - warning
+    'info': '#17a2b8',         # Cyan - info
+    'light': '#f8f9fa',        # Light gray - background
+    'dark': '#343a40',         # Dark gray - text
+    'purple': '#9467bd',       # Purple - special markers
+    'brown': '#8c564b',        # Brown - contrast
+    'pink': '#e377c2',         # Pink - highlight
+    'gray': '#7f7f7f',         # Gray - neutral
+    'olive': '#bcbd22',        # Olive green - natural
+    'cyan': '#17becf'          # Cyan blue - fresh
 }
 
-# Nature期刊推荐的色盲友好调色板
+# Nature journal recommended colorblind-safe palette
 NATURE_COLORBLIND_SAFE = [
-    '#1f77b4',  # 蓝色
-    '#ff7f0e',  # 橙色
-    '#2ca02c',  # 绿色
-    '#d62728',  # 红色
-    '#9467bd',  # 紫色
-    '#8c564b',  # 棕色
-    '#e377c2',  # 粉色
-    '#7f7f7f',  # 灰色
-    '#bcbd22',  # 橄榄绿
-    '#17becf'   # 青蓝
+    '#1f77b4',  # Blue
+    '#ff7f0e',  # Orange
+    '#2ca02c',  # Green
+    '#d62728',  # Red
+    '#9467bd',  # Purple
+    '#8c564b',  # Brown
+    '#e377c2',  # Pink
+    '#7f7f7f',  # Gray
+    '#bcbd22',  # Olive green
+    '#17becf'   # Cyan blue
 ]
 
-# 设置matplotlib的Nature期刊风格
+# Set matplotlib Nature journal style
 def setup_nature_style():
-    """设置Nature期刊风格的matplotlib参数"""
+    """Set Nature journal style matplotlib parameters"""
     plt.style.use('default')  # 重置为默认样式
 
-    # 设置字体
+    # Set font
     plt.rcParams.update({
         'font.family': 'sans-serif',
         'font.sans-serif': ['Arial', 'Helvetica', 'DejaVu Sans'],
@@ -63,7 +63,7 @@ def setup_nature_style():
         'legend.fontsize': 9,
         'figure.titlesize': 14,
 
-        # 设置颜色
+        # Set colors
         'axes.prop_cycle': plt.cycler('color', NATURE_COLORBLIND_SAFE),
         'axes.edgecolor': NATURE_COLORS['dark'],
         'axes.labelcolor': NATURE_COLORS['dark'],
@@ -71,7 +71,7 @@ def setup_nature_style():
         'xtick.color': NATURE_COLORS['dark'],
         'ytick.color': NATURE_COLORS['dark'],
 
-        # 设置线条和网格
+        # Set lines and grid
         'axes.linewidth': 0.8,
         'grid.linewidth': 0.5,
         'lines.linewidth': 1.5,
@@ -81,20 +81,20 @@ def setup_nature_style():
         'xtick.minor.width': 0.6,
         'ytick.minor.width': 0.6,
 
-        # 设置背景
+        # Set background
         'figure.facecolor': 'white',
         'axes.facecolor': 'white',
         'savefig.facecolor': 'white',
         'savefig.edgecolor': 'none',
 
-        # 设置DPI和格式
+        # Set DPI and format
         'figure.dpi': 100,
         'savefig.dpi': 300,
         'savefig.format': 'png',
         'savefig.bbox': 'tight',
         'savefig.pad_inches': 0.1,
 
-        # 其他设置
+        # Other settings
         'axes.spines.top': False,
         'axes.spines.right': False,
         'axes.grid': True,
@@ -102,17 +102,20 @@ def setup_nature_style():
     })
 
 class AttentionHeatmapExtractor:
-    """注意力热力图提取器"""
+    """
+    [Attention Analysis Module]
+    Extracts cross-attention maps from U-Net layers to visualize focus/suppression
+    """
     
     def __init__(self, device="cuda"):
         self.device = device
         self.attention_maps = {}
         self.hooks = []
 
-        # 设置Nature期刊风格
+        # Set Nature journal style
         setup_nature_style()
 
-        # Nature期刊推荐的热力图颜色映射
+        # Nature journal recommended heatmap color mappings
         self.nature_heatmap_colors = {
             'viridis_nature': plt.cm.viridis,      # 主推荐：蓝绿渐变，色盲友好
             'plasma_nature': plt.cm.plasma,        # 次推荐：紫红渐变，高对比
@@ -124,7 +127,7 @@ class AttentionHeatmapExtractor:
             'seismic_nature': plt.cm.seismic       # 对比强烈
         }
 
-        # 默认使用viridis（Nature期刊最推荐的色盲友好颜色映射）
+        # Default to viridis (Nature journal most recommended colorblind-safe color mapping)
         self.default_cmap = 'viridis'
 
         self.target_layers = [
@@ -147,21 +150,21 @@ class AttentionHeatmapExtractor:
         ]
         
     def register_hooks(self, unet):
-        """注册注意力层的hook"""
+        """Register hooks for attention layers"""
         
         def get_attention_hook(layer_name):
             def hook(module, input, output):
-                # 获取注意力权重
+                # Get attention weights
                 if hasattr(module, 'processor') and hasattr(module.processor, 'attention_probs'):
                     attention_probs = module.processor.attention_probs
                     if attention_probs is not None:
                         self.attention_maps[layer_name] = attention_probs.detach().cpu()
                 elif len(output) > 1 and output[1] is not None:
-                    # 有些实现中注意力权重作为第二个输出
+                    # In some implementations attention weights are the second output
                     self.attention_maps[layer_name] = output[1].detach().cpu()
             return hook
         
-        # 注册hooks
+        # Register hooks
         for layer_name in self.target_layers:
             try:
                 layer = self._get_layer_by_name(unet, layer_name)
@@ -173,7 +176,7 @@ class AttentionHeatmapExtractor:
                 print(f"   Warning: Could not register hook for {layer_name}: {e}")
     
     def _get_layer_by_name(self, model, layer_name):
-        """根据名称获取层"""
+        """Get layer by name"""
         parts = layer_name.split('.')
         layer = model
         
@@ -188,14 +191,14 @@ class AttentionHeatmapExtractor:
             return None
     
     def clear_hooks(self):
-        """清除所有hooks"""
+        """Clear all hooks"""
         for hook in self.hooks:
             hook.remove()
         self.hooks.clear()
         self.attention_maps.clear()
     
     def extract_anomaly_attention(self, prompt_tokens, anomaly_token_indices):
-        """提取anomaly tokens的注意力"""
+        """Extract attention for anomaly tokens"""
         anomaly_attention_maps = {}
         
         for layer_name, attention_map in self.attention_maps.items():
@@ -205,41 +208,41 @@ class AttentionHeatmapExtractor:
             # attention_map shape: [batch_size, num_heads, seq_len, seq_len]
             batch_size, num_heads, seq_len, _ = attention_map.shape
             
-            # 提取anomaly tokens对应的注意力
+            # Extract attention for anomaly tokens
             anomaly_attention = []
             for token_idx in anomaly_token_indices:
                 if token_idx < seq_len:
-                    # 获取该token的注意力权重
+                    # Get attention weights for this token
                     token_attention = attention_map[:, :, :, token_idx]  # [batch, heads, seq_len]
                     anomaly_attention.append(token_attention)
             
             if anomaly_attention:
-                # 平均所有anomaly tokens的注意力
+                # Average attention across all anomaly tokens
                 anomaly_attention = torch.stack(anomaly_attention, dim=-1).mean(dim=-1)
-                # 平均所有注意力头
+                # Average across all attention heads
                 anomaly_attention = anomaly_attention.mean(dim=1)  # [batch, seq_len]
                 anomaly_attention_maps[layer_name] = anomaly_attention
         
         return anomaly_attention_maps
     
     def generate_spatial_heatmap(self, attention_weights, target_size=(64, 64)):
-        """将注意力权重转换为空间热力图"""
+        """Convert attention weights to spatial heatmap"""
         
         # attention_weights shape: [batch, seq_len]
         batch_size, seq_len = attention_weights.shape
         
-        # 假设是方形的空间布局
+        # Assume square spatial layout
         spatial_dim = int(np.sqrt(seq_len))
         if spatial_dim * spatial_dim != seq_len:
-            # 如果不是完全平方数，尝试找到最接近的
+            # If not a perfect square, try to find the closest
             spatial_dim = int(np.sqrt(seq_len))
             seq_len = spatial_dim * spatial_dim
             attention_weights = attention_weights[:, :seq_len]
         
-        # 重塑为空间维度
+        # Reshape to spatial dimensions
         spatial_attention = attention_weights.reshape(batch_size, spatial_dim, spatial_dim)
         
-        # 调整大小到目标尺寸
+        # Resize to target size
         heatmaps = []
         for i in range(batch_size):
             heatmap = spatial_attention[i].numpy()
@@ -250,11 +253,11 @@ class AttentionHeatmapExtractor:
     
     def save_heatmap_visualization(self, heatmaps_before, heatmaps_after, layer_names, 
                                  output_dir, experiment_name, defect_types):
-        """保存热力图可视化"""
+        """Save heatmap visualization"""
         
         os.makedirs(output_dir, exist_ok=True)
         
-        # 创建对比图
+        # Create comparison figure
         num_layers = len(layer_names)
         fig, axes = plt.subplots(2, num_layers, figsize=(4*num_layers, 8))
         
@@ -262,7 +265,7 @@ class AttentionHeatmapExtractor:
             axes = axes.reshape(2, 1)
         
         for i, layer_name in enumerate(layer_names):
-            # 优化前的热力图
+            # Heatmap before optimization
             if layer_name in heatmaps_before:
                 heatmap_before = heatmaps_before[layer_name][0]  # 取第一个batch
                 im1 = axes[0, i].imshow(heatmap_before, cmap=self.default_cmap, interpolation='bilinear')
@@ -272,7 +275,7 @@ class AttentionHeatmapExtractor:
                 cbar1 = plt.colorbar(im1, ax=axes[0, i], fraction=0.046, pad=0.04)
                 cbar1.ax.tick_params(labelsize=8, colors=NATURE_COLORS['dark'])
 
-            # 优化后的热力图
+            # Heatmap after optimization
             if layer_name in heatmaps_after:
                 heatmap_after = heatmaps_after[layer_name][0]  # 取第一个batch
                 im2 = axes[1, i].imshow(heatmap_after, cmap=self.default_cmap, interpolation='bilinear')
@@ -286,7 +289,7 @@ class AttentionHeatmapExtractor:
                     fontsize=14, y=0.95, color=NATURE_COLORS['dark'], fontweight='bold')
         plt.tight_layout()
 
-        # 保存图像
+        # Save image
         heatmap_path = os.path.join(output_dir, f"attention_heatmap_{experiment_name}.png")
         plt.savefig(heatmap_path, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
         plt.close()
@@ -297,7 +300,7 @@ class AttentionHeatmapExtractor:
     
     def save_individual_heatmaps(self, heatmaps, layer_names, output_dir, 
                                experiment_name, stage_name):
-        """保存单独的热力图"""
+        """Save individual heatmaps"""
         
         stage_dir = os.path.join(output_dir, f"heatmaps_{stage_name}")
         os.makedirs(stage_dir, exist_ok=True)
@@ -308,7 +311,7 @@ class AttentionHeatmapExtractor:
             if layer_name in heatmaps:
                 heatmap = heatmaps[layer_name][0]  # 取第一个batch
                 
-                # 创建单独的热力图
+                # Create individual heatmap
                 plt.figure(figsize=(8, 6), facecolor='white')
                 plt.imshow(heatmap, cmap=self.default_cmap, interpolation='bilinear')
                 cbar = plt.colorbar(fraction=0.046, pad=0.04)
@@ -317,7 +320,7 @@ class AttentionHeatmapExtractor:
                          color=NATURE_COLORS['dark'], fontweight='bold', pad=20)
                 plt.axis('off')
                 
-                # 保存
+                # Save
                 filename = f"{experiment_name}_{layer_name.replace('.', '_')}_{stage_name}.png"
                 filepath = os.path.join(stage_dir, filename)
                 plt.savefig(filepath, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
@@ -328,9 +331,9 @@ class AttentionHeatmapExtractor:
         return saved_files
 
 def find_anomaly_token_indices(tokenizer, prompt, anomaly_tokens):
-    """找到anomaly tokens在prompt中的索引"""
+    """Find the indices of anomaly tokens in the prompt"""
     
-    # 编码prompt
+    # Encode prompt
     tokens = tokenizer.encode(prompt, add_special_tokens=True)
     token_strings = [tokenizer.decode([token]) for token in tokens]
     
@@ -346,7 +349,7 @@ def find_anomaly_token_indices(tokenizer, prompt, anomaly_tokens):
 
 def create_mock_attention_heatmaps(prompt, anomaly_tokens, defect_types,
                                  experiment_name, output_dir):
-    """创建模拟的注意力热力图（用于演示）"""
+    """Create mock attention heatmaps (for demonstration)"""
 
     print(f"   Creating mock attention heatmaps for: {prompt}")
     print(f"   Anomaly tokens: {anomaly_tokens}")
@@ -356,10 +359,10 @@ def create_mock_attention_heatmaps(prompt, anomaly_tokens, defect_types,
         import matplotlib.pyplot as plt
         import numpy as np
 
-        # 创建输出目录
+        # Create output directory
         os.makedirs(output_dir, exist_ok=True)
 
-        # 模拟不同层的注意力模式
+        # Simulate attention patterns for different layers
         layer_names = [
             "down_blocks.2.attn2",
             "mid_block.attn2",
@@ -367,38 +370,38 @@ def create_mock_attention_heatmaps(prompt, anomaly_tokens, defect_types,
             "up_blocks.2.attn2"
         ]
 
-        # 创建对比图
+        # Create comparison figure
         fig, axes = plt.subplots(2, len(layer_names), figsize=(4*len(layer_names), 8))
 
         if len(layer_names) == 1:
             axes = axes.reshape(2, 1)
 
         for i, layer_name in enumerate(layer_names):
-            # 模拟优化前的注意力（较分散）
+            # Simulate attention before optimization (more diffuse)
             np.random.seed(42 + i)  # 确保可重复
             heatmap_before = np.random.rand(64, 64) * 0.5
-            # 添加一些随机的高注意力区域
+            # Add some random high attention regions
             for _ in range(3):
                 x, y = np.random.randint(10, 54, 2)
                 heatmap_before[x-5:x+5, y-5:y+5] += np.random.rand(10, 10) * 0.5
 
-            # 模拟优化后的注意力（更集中在缺陷区域）
+            # Simulate attention after optimization (more focused on defect area)
             heatmap_after = np.random.rand(64, 64) * 0.3
-            # 根据缺陷类型创建更集中的注意力模式
+            # Create more focused attention pattern based on defect type
             if 'crack' in defect_types or 'crack' in anomaly_tokens:
-                # 裂纹模式：线性高注意力
+                # Crack pattern: linear high attention
                 heatmap_after[20:44, 30:34] += 0.8
             elif 'hole' in defect_types or 'hole' in anomaly_tokens:
-                # 孔洞模式：圆形高注意力
+                # Hole pattern: circular high attention
                 center = (32, 32)
                 y, x = np.ogrid[:64, :64]
                 mask = (x - center[0])**2 + (y - center[1])**2 <= 8**2
                 heatmap_after[mask] += 0.7
             else:
-                # 通用缺陷模式：区域性高注意力
+                # General defect pattern: regional high attention
                 heatmap_after[25:39, 25:39] += 0.6
 
-            # 绘制优化前的热力图
+            # Plot heatmap before optimization
             im1 = axes[0, i].imshow(heatmap_before, cmap='viridis', interpolation='bilinear', vmin=0, vmax=1)
             axes[0, i].set_title(f'Before Optimization\n{layer_name}', fontsize=10,
                                color=NATURE_COLORS['dark'], fontweight='bold')
@@ -406,7 +409,7 @@ def create_mock_attention_heatmaps(prompt, anomaly_tokens, defect_types,
             cbar1 = plt.colorbar(im1, ax=axes[0, i], fraction=0.046, pad=0.04)
             cbar1.ax.tick_params(labelsize=8, colors=NATURE_COLORS['dark'])
 
-            # 绘制优化后的热力图
+            # Plot heatmap after optimization
             im2 = axes[1, i].imshow(heatmap_after, cmap='viridis', interpolation='bilinear', vmin=0, vmax=1)
             axes[1, i].set_title(f'After Optimization\n{layer_name}', fontsize=10,
                                color=NATURE_COLORS['dark'], fontweight='bold')
@@ -418,20 +421,20 @@ def create_mock_attention_heatmaps(prompt, anomaly_tokens, defect_types,
                     fontsize=14, y=0.95, color=NATURE_COLORS['dark'], fontweight='bold')
         plt.tight_layout()
 
-        # 保存图像
+        # Save image
         heatmap_path = os.path.join(output_dir, f"attention_heatmap_{experiment_name}.png")
         plt.savefig(heatmap_path, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
         plt.close()
 
         print(f"   Saved mock attention heatmap: {heatmap_path}")
 
-        # 创建单独的热力图文件夹
+        # Create individual heatmap folder
         heatmaps_dir = os.path.join(output_dir, "attention_heatmaps")
         os.makedirs(heatmaps_dir, exist_ok=True)
 
-        # 保存单独的热力图
+        # Save individual heatmaps
         for i, layer_name in enumerate(layer_names):
-            # 重新生成相同的模拟数据
+            # Regenerate the same mock data
             np.random.seed(42 + i)
             heatmap_before = np.random.rand(64, 64) * 0.5
             for _ in range(3):
@@ -449,7 +452,7 @@ def create_mock_attention_heatmaps(prompt, anomaly_tokens, defect_types,
             else:
                 heatmap_after[25:39, 25:39] += 0.6
 
-            # 保存优化前
+            # Save before optimization
             plt.figure(figsize=(8, 6), facecolor='white')
             plt.imshow(heatmap_before, cmap='viridis', interpolation='bilinear', vmin=0, vmax=1)
             cbar = plt.colorbar(fraction=0.046, pad=0.04)
@@ -461,7 +464,7 @@ def create_mock_attention_heatmaps(prompt, anomaly_tokens, defect_types,
             plt.savefig(before_path, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
             plt.close()
 
-            # 保存优化后
+            # Save after optimization
             plt.figure(figsize=(8, 6), facecolor='white')
             plt.imshow(heatmap_after, cmap='viridis', interpolation='bilinear', vmin=0, vmax=1)
             cbar = plt.colorbar(fraction=0.046, pad=0.04)
@@ -481,9 +484,9 @@ def create_mock_attention_heatmaps(prompt, anomaly_tokens, defect_types,
 
 def extract_attention_heatmaps(generator, prompt, anomaly_tokens, defect_types,
                              experiment_name, output_dir):
-    """提取并保存注意力热力图（当前使用模拟版本）"""
+    """Extract and save attention heatmaps (currently uses mock version)"""
 
-    # 目前使用模拟版本，实际的注意力提取需要更深入的集成
+    # Currently using mock version, actual attention extraction requires deeper integration
     return create_mock_attention_heatmaps(
         prompt, anomaly_tokens, defect_types, experiment_name, output_dir
     )

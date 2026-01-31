@@ -1,45 +1,46 @@
-# 2-GAO： A Contrastive Learning Defect Generation System - Installation and User Guide
+**English** | [中文](README_CN.md)
+
+# 2-GAO: Contrastive Learning Defect Generation System
 
 ## 📋 System Overview
 
-This system is a contrastive learning defect generation tool based on Stable Diffusion. It can generate defects on defect-free images guided by defective samples. The system leverages attention mechanism optimization and feature alignment techniques to achieve high-quality defect generation.
+This system is a contrastive learning defect generation tool based on Stable Diffusion. It generates defects on defect-free images guided by defective samples, leveraging attention mechanism optimization and feature alignment.
 
-**Some results of this research could be found in:
-https://drive.google.com/file/d/1FEvOEMTT9A-Ykt7jTK17nSAblMLfGHZa/view** **or the folder:** [/outputsResults](https://github.com/mutianwei521/2GAO/tree/main/outputsResults)
+**Results:**
+- [Google Drive](https://drive.google.com/file/d/1FEvOEMTT9A-Ykt7jTK17nSAblMLfGHZa/view)
+- [/outputsResults](https://github.com/mutianwei521/2GAO/tree/main/outputsResults)
 
+### 🏗️ Network Architecture
+![Overall Network Architecture](paper/figures/2gao_03.png)
+*Figure: The overall framework consists of five stages: (1) VAE Encoding, (2) IoA Alignment, (3) Forward Diffusion, (4) Attention-Guided Reverse Optimization, and (5) Decoding.*
+
+---
 
 ## 🔧 System Requirements
 
-### Hardware Requirements
-- **GPU**: NVIDIA GPU (recommended 8GB+ VRAM)
+### Hardware
+- **GPU**: NVIDIA GPU (8GB+ VRAM recommended)
 - **RAM**: 16GB+
 - **Storage**: 10GB+ free space
 
-### Software Requirements
+### Software
 - **OS**: Windows 10/11, Linux, macOS
 - **Python**: 3.8–3.11 (recommended 3.10)
 - **CUDA**: 11.8+ (for GPU acceleration)
 
-## 📦 Installation Steps
+---
 
-### 1. Clone or Download the Source Code
+## 📦 Installation
 
-Ensure you have the following core files:
-```
-main_contrastive.py                 # Main entry script
-contrastive_defect_generator.py     # Core generator
-smart_prompt_generator.py           # Smart prompt generator
-attention_heatmap_extractor.py      # Attention heatmap extractor
-requirements.txt                    # Dependency list
-```
-
-### 2. Create a Python Virtual Environment
-
+### 1. Clone Repository
 ```bash
-# Create a virtual environment
-python -m venv venv
+git clone https://github.com/mutianwei521/2GAO.git
+cd 2GAO
+```
 
-# Activate the virtual environment
+### 2. Create Virtual Environment
+```bash
+python -m venv venv
 # Windows:
 venv\Scripts\activate
 # Linux/macOS:
@@ -47,169 +48,308 @@ source venv/bin/activate
 ```
 
 ### 3. Install Dependencies
-
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+# Windows (recommended):
+pip install -r requirements_windows.txt
 
-# If you encounter issues installing xformers on Windows, skip it:
-pip install torch torchvision diffusers transformers accelerate
-pip install opencv-python Pillow numpy scikit-image matplotlib tqdm safetensors scipy
+# Linux/macOS:
+pip install -r requirements.txt
 ```
 
 ### 4. Verify Installation
-
 ```bash
-# Check Python syntax
-python -m py_compile main_contrastive.py
-python -m py_compile contrastive_defect_generator.py
-python -m py_compile smart_prompt_generator.py
-python -m py_compile attention_heatmap_extractor.py
-
-# Test imports
 python -c "import torch; print('PyTorch:', torch.__version__)"
 python -c "import diffusers; print('Diffusers:', diffusers.__version__)"
 ```
 
-## 📁 Data Preparation
+---
 
-### Directory Structure
+## 📁 Project Structure
+
 ```
-your_project/
-├── main_contrastive.py
-├── contrastive_defect_generator.py
-├── smart_prompt_generator.py
-├── attention_heatmap_extractor.py
-├── images/
-│   ├── good/                    # Defect-free images
-│   │   ├── good_image.png
-│   │   └── good_image_mask.png  # Object mask
-│   └── bad/                     # Defective images
-│       ├── defect1.png
-│       ├── defect1_mask.png
-│       ├── defect2.png
-│       └── defect2_mask.png
-└── outputs/                     # Output directory (auto-created)
+2GAO/
+├── main_contrastive.py              # Main entry
+├── contrastive_defect_generator.py  # Core generator
+├── smart_prompt_generator.py        # Smart prompt generator
+├── attention_heatmap_extractor.py   # Attention extractor
+├── run_ablation.py                  # Ablation study runner
+├── requirements.txt                 # Linux dependencies
+├── requirements_windows.txt         # Windows dependencies
+├── batch_generate_mvtec.py          # MVTec dataset batch
+├── batch_generate_visa.py           # VISA dataset batch
+├── batch_generate_concrete.py       # Concrete dataset batch
+├── batch_generate_custom.py         # Custom dataset batch
+├── test/
+│   ├── quick_test_mvtec.py          # MVTec quick test
+│   ├── quick_test_visa.py           # VISA quick test
+│   ├── quick_test_concrete.py       # Concrete quick test
+│   ├── evaluate_visa_metrics.py     # VISA evaluation
+│   ├── evaluate_concrete_metrics.py # Concrete evaluation
+│   └── evaluate_mvtec_metrics.py    # MVTec evaluation
+├── visaImages/                      # VISA dataset images
+├── concreteImages/                  # Concrete dataset images
+├── mvtecImages/                     # MVTec dataset images
+├── outputs_visa/                    # VISA output directory
+├── outputs_concrete/                # Concrete output directory
+└── outputs_mvtec/                   # MVTec output directory
 ```
 
-### Mask Files
-- **Object mask (good_image_mask.png)**: White = object, black = background
-- **Defect mask (defect_mask.png)**: White = defect, black = normal area
+---
 
-## 🚀 Usage
+## 🚀 Main Programs
 
-### Basic Usage
+### main_contrastive.py
+Main entry point for single image defect generation.
+
 ```bash
-# Simplest usage
-python main_contrastive.py --prompt "bottle crack"
-
-# Specify input and output directories
-python main_contrastive.py     --prompt "bottle crack"     --good-dir "images/good"     --bad-dir "images/bad"     --output-dir "outputs"
+python main_contrastive.py \
+    --prompt "bottle crack" \
+    --good-dir "images/good" \
+    --bad-dir "images/bad" \
+    --output-dir "outputs" \
+    --num-inference-steps 100 \
+    --r 0.25 \
+    --enable-feature-alignment \
+    --save-attention-heatmaps
 ```
 
-### Advanced Parameters
+### contrastive_defect_generator.py
+Core generator module (imported by main_contrastive.py).
+
+### attention_heatmap_extractor.py
+Extracts and visualizes attention heatmaps.
+
+### smart_prompt_generator.py
+Generates optimized prompts based on image content.
+
+---
+
+## 🔬 Quick Test Programs
+
+### test/quick_test_mvtec.py
+MVTec dataset quick test.
 ```bash
-python main_contrastive.py     --prompt "bottle crack hole"     --good-dir "images/good"     --bad-dir "images/bad"     --output-dir "outputs_contrastive"     --num-inference-steps 100     --r 0.25     --learning-rate 0.01     --num-optimization-steps 25     --optimization-interval 5     --feather-radius 15     --enable-feature-alignment     --ioa-threshold 0.5     --save-attention-heatmaps     --measure-inference-time
+python test/quick_test_mvtec.py --category bottle --num-defects 2
+```
+Parameters:
+- `--category`: MVTec category (bottle, cable, capsule, etc.)
+- `--num-defects`: Number of defects (1-4)
+
+### test/quick_test_visa.py
+VISA dataset quick test.
+```bash
+python test/quick_test_visa.py --category candle --num-defects 2
+```
+Parameters:
+- `--category`: VISA category (candle, capsules, cashew, etc.)
+- `--num-defects`: Number of defects (1-4)
+
+### test/quick_test_concrete.py
+Concrete crack dataset quick test.
+```bash
+python test/quick_test_concrete.py --category CFD --num-defects 2
+```
+Parameters:
+- `--category`: Concrete category (CFD, CRACK500, DeepCrack, etc.)
+- `--num-defects`: Number of defects (1-4)
+
+---
+
+## 📦 Batch Generation Programs
+
+### batch_generate_mvtec.py
+MVTec dataset batch generation (15 categories).
+```bash
+python batch_generate_mvtec.py \
+    --mvtec-dir "mvtecImages" \
+    --output-dir "outputs_mvtec" \
+    --num-samples 50 \
+    --num-defects 1 2 3 4
+```
+MVTec Categories: bottle, cable, capsule, carpet, grid, hazelnut, leather, metal_nut, pill, screw, tile, toothbrush, transistor, wood, zipper
+
+### batch_generate_visa.py
+VISA dataset batch generation (12 categories).
+```bash
+python batch_generate_visa.py \
+    --visa-dir "visaImages" \
+    --output-dir "outputs_visa" \
+    --num-samples 50 \
+    --num-defects 1 2 3 4
+```
+VISA Categories: candle, capsules, cashew, chewinggum, fryum, macaroni1, macaroni2, pcb1, pcb2, pcb3, pcb4, pipe_fryum
+
+### batch_generate_concrete.py
+Concrete crack dataset batch generation (8 categories).
+```bash
+python batch_generate_concrete.py \
+    --concrete-dir "concreteImages" \
+    --output-dir "outputs_concrete" \
+    --num-samples 50 \
+    --num-defects 1 2 3 4
+```
+Concrete Categories: CFD, CRACK500, DeepCrack, Eugen, Rissbilder, Volker, crack, cracktree200
+
+### batch_generate_custom.py
+Custom dataset batch generation. See [CUSTOM_DATASET.md](CUSTOM_DATASET.md) for details.
+```bash
+python batch_generate_custom.py \
+    --config "config/custom_dataset.yaml" \
+    --output-dir "outputs_custom"
 ```
 
-## 📊 Parameter Explanation
+---
 
-### Core Parameters
-- `--prompt`: Text prompt (product + defect type)
-- `--good-dir`: Directory of defect-free images
-- `--bad-dir`: Directory of defective images
-- `--output-dir`: Output directory
+## 📊 Evaluation Programs
 
-### Generation Parameters
-- `--num-inference-steps`: Denoising steps (default: 100)
-- `--r`: Retention ratio for partial diffusion (default: 0.25)
-- `--learning-rate`: Learning rate for attention optimization (default: 0.01)
-- `--num-optimization-steps`: Steps per optimization (default: 25)
-- `--optimization-interval`: Interval between optimizations (default: 5)
+### test/evaluate_visa_metrics.py
+Evaluate VISA dataset generation results.
+```bash
+python test/evaluate_visa_metrics.py \
+    --output-dir "outputs_visa" \
+    --save-csv
+```
+Metrics: I-AUC, I-F1, P-AUC, P-F1, PRO, IS, LPIPS  
+Output Structure: `outputs_visa/{category}/defect_{N}/`
 
-### Post-processing Parameters
-- `--feather-radius`: Feathering radius (default: 15)
-- `--defect-variation`: Defect variation intensity (0.0–1.0, default: 0.0)
+### test/evaluate_concrete_metrics.py
+Evaluate Concrete dataset generation results.
+```bash
+python test/evaluate_concrete_metrics.py \
+    --output-dir "outputs_concrete" \
+    --save-csv
+```
+Output Structure: `outputs_concrete/defect_{N}/{category}/`
 
-### Feature Toggles
-- `--enable-feature-alignment`: Enable feature alignment
-- `--ioa-threshold`: IoA threshold (default: 0.5)
-- `--save-attention-heatmaps`: Save attention heatmaps
-- `--measure-inference-time`: Measure inference time
+### test/evaluate_mvtec_metrics.py
+Evaluate MVTec dataset generation results.
+```bash
+python test/evaluate_mvtec_metrics.py \
+    --output-dir "outputs_mvtec" \
+    --save-csv
+```
+Output Tables:
+- Table A1: Category IS/LPIPS
+- Table A2: Scenario metrics (I-AUC, I-F1, P-AUC, P-F1, PRO)
+- Table A3: Detailed per-category per-defect metrics
 
-### Device Parameters
-- `--device`: Device (cuda/cpu, default: cuda)
-- `--model-id`: Stable Diffusion model ID
-- `--cache-dir`: Model cache directory (default: models)
+Output Structure: `outputs_mvtec/{category}/{1,2,3,4}/`
+
+---
+
+## 🔬 Ablation Study (Paper Reproducibility)
+
+### run_ablation.py
+Reproduce ablation study experiments from Section 2.4 and Appendix. 
+Generates attention maps and figures using DAAM attention extraction.
+
+```bash
+# Run all ablation experiments (generates Figures 6-12)
+python run_ablation.py --mode all
+
+# Semantic Ambiguity Verification (Figure 7)
+# Compares generic vs specific prompts attention distribution
+python run_ablation.py --mode semantic
+
+# Attention Guidance Verification (Figure 8)
+# Compares with/without Focus Loss & Suppression Loss
+python run_ablation.py --mode attention
+
+# Latent Entanglement Verification (Figures 9-11)
+# Multi-defect attention disentanglement (2/3/4 defects)
+python run_ablation.py --mode entanglement
+
+# IoA Alignment Verification (Figure 12)
+# Geometric validity: partial/no overlap correction
+python run_ablation.py --mode ioa
+
+# Hyperparameter Sensitivity (Figure 6)
+# IoA threshold, diffusion steps, optimization steps
+python run_ablation.py --mode hyperparameter
+
+# Print Tables S2-S6 only
+python run_ablation.py --mode tables
+```
+
+**Generated Figures:**
+- Figure 6: Hyperparameter sensitivity analysis (4 subplots)
+- Figure 7: Semantic ambiguity - generic vs specific prompts
+- Figure 8: Attention guidance - Focus/Suppression Loss effect
+- Figures 9-11: Latent entanglement - multi-defect disentanglement
+- Figure 12: IoA alignment - geometric validity
+
+**Ablation Components (Table S2):**
+- **w/o Prompt Guidance**: Semantic consistency (I-AUC: 75.63%)
+- **w/o Attention Guidance**: Spatial precision (PRO: 75.64%)
+- **w/o Contrastive Loss**: Multi-defect disentanglement (PRO: 78.95%)
+- **w/o IoA Alignment**: Geometric validity (PRO: 82.34%)
+- **Full Model**: All components (I-AUC: 100%, PRO: 99.90%)
+
+---
 
 ## 📁 Output Files
 
-### Main Outputs
-- `contrastive_defect_image.png`: Final generated defect image
-- `feathered_blend_image.png`: Feathered blend image
-- `non_feathered_blend_image.png`: Hard-edge blend image
-- `comparison_grid.png`: Comparison grid
+| Directory | Content | Description |
+|-----------|---------|-------------|
+| `feathered_blend/` | `*.png` | Final blended images (main output) |
+| `non_feathered_blend/` | `*.png` | Non-feathered blended images |
+| `comparison_grid/` | `*.png` | Before/after comparison |
+| `combined_defect_masks/` | `*.png` | Generated defect masks |
+| `defect_heatmaps/` | `*.png` | Defect probability heatmaps |
+| `original_good/` | `*.png` | Source good images |
+| `reference_bad/` | `*.png` | Source defect images |
 
-### Intermediate Files
-- `original_good_image.png`: Input defect-free image
-- `good_object_mask.png`: Object mask
-- `combined_defect_mask.png`: Combined defect mask
-- `reference_bad_image.png`: Reference defective image
+---
 
-### Optional Outputs
-- `attention_heatmaps/`: Attention heatmaps (if enabled)
-- `inference_times.txt`: Inference time logs (if enabled)
+## 📚 Documentation
 
-## 💡 Practical Examples
+- [PARAMETERS.md](PARAMETERS.md) - Parameter reference guide
+- [CUSTOM_DATASET.md](CUSTOM_DATASET.md) - Custom dataset tutorial
 
-### Example 1: Bottle Crack
+---
+
+## 💡 Examples
+
+### Full VISA Workflow
 ```bash
-mkdir -p images/good images/bad
-# Put bottle_good.png and bottle_good_mask.png in images/good/
-# Put bottle_crack.png and bottle_crack_mask.png in images/bad/
+# Generate
+python batch_generate_visa.py \
+    --visa-dir "visaImages" \
+    --output-dir "outputs_visa" \
+    --num-samples 50
 
-python main_contrastive.py     --prompt "bottle crack"     --good-dir "images/good"     --bad-dir "images/bad"     --output-dir "outputs_bottle_crack"     --num-inference-steps 100     --enable-feature-alignment     --save-attention-heatmaps
+# Evaluate
+python test/evaluate_visa_metrics.py \
+    --output-dir "outputs_visa" \
+    --save-csv
 ```
 
-### Example 2: Multiple Defects
+### Full MVTec Workflow
 ```bash
-# Prepare multiple defect images
-# images/bad/crack.png, crack_mask.png
-# images/bad/hole.png, hole_mask.png
-# images/bad/scratch.png, scratch_mask.png
+# Generate
+python batch_generate_mvtec.py \
+    --mvtec-dir "mvtecImages" \
+    --output-dir "outputs_mvtec" \
+    --num-samples 50
 
-python main_contrastive.py     --prompt "nutshell damage"     --good-dir "images/good"     --bad-dir "images/bad"     --output-dir "outputs_multi_defects"     --r 0.25     --feather-radius 20     --enable-feature-alignment     --ioa-threshold 0.7
+# Evaluate
+python test/evaluate_mvtec_metrics.py \
+    --output-dir "outputs_mvtec" \
+    --save-csv
 ```
 
-### Example 3: Quick Prototype
-```bash
-python main_contrastive.py     --prompt "cable bent"     --num-inference-steps 25     --r 0.5     --num-optimization-steps 10     --optimization-interval 3
-```
-
-## 🔧 Advanced Settings
-
-### Model Selection
-The system defaults to `runwayml/stable-diffusion-inpainting`, but you can try other models:
-```bash
-python main_contrastive.py     --model-id "stabilityai/stable-diffusion-2-inpainting"     --cache-dir "./models"
-```
-
-### Performance Tuning
-```bash
-# High quality (requires strong GPU)
-python main_contrastive.py     --num-inference-steps 150     --r 0.2     --learning-rate 0.005     --num-optimization-steps 50     --optimization-interval 3
-
-# Balanced (recommended)
-python main_contrastive.py     --num-inference-steps 100     --r 0.25     --learning-rate 0.01     --num-optimization-steps 25     --optimization-interval 5
-
-# Fast (testing)
-python main_contrastive.py     --num-inference-steps 50     --r 0.5     --learning-rate 0.02     --num-optimization-steps 15     --optimization-interval 8
-```
+---
 
 ## 🎯 Best Practices
 
-1. **Data Preparation**: Ensure accurate mask labeling.
-2. **Parameter Selection**: Start with defaults and fine-tune gradually.
-3. **Quality Control**: Use `--save-attention-heatmaps` to inspect attention.
-4. **Performance Balance**: Adjust inference steps based on hardware.
-5. **Result Evaluation**: Use `comparison_grid.png` for visual comparison.
+1. **Data Preparation**: Ensure accurate mask labeling
+2. **Start Simple**: Use defaults first, then fine-tune
+3. **Quality Check**: Use `--save-attention-heatmaps`
+4. **Hardware Balance**: Adjust steps based on GPU
+5. **Evaluate Results**: Use evaluation scripts for metrics
+
+---
+
+## 📜 License
+
+MIT License

@@ -1,6 +1,6 @@
 """
-对比学习缺陷生成器
-使用有缺陷图引导无缺陷图生成缺陷的对比学习方法
+Contrastive Learning Defect Generator
+Uses defective images to guide the generation of defects in non-defective images
 """
 
 import torch
@@ -14,25 +14,29 @@ from diffusers import StableDiffusionInpaintPipeline, DDIMScheduler
 import cv2
 from attention_heatmap_extractor import extract_attention_heatmaps
 
+# ==============================================================================
+# [Model Initialization Module]
+# Initializes VAE, U-Net, and Text Encoder for latent diffusion
+# ==============================================================================
 class ContrastiveDefectGenerator:
     def __init__(self, model_id: str = "runwayml/stable-diffusion-inpainting", 
                  device: str = "cuda", cache_dir: str = "./models"):
         """
-        初始化对比学习缺陷生成器
+        Initialize the Contrastive Learning Defect Generator
         
         Args:
-            model_id: Stable Diffusion模型ID
-            device: 计算设备
-            cache_dir: 模型缓存目录
+            model_id: Stable Diffusion model ID
+            device: Computing device
+            cache_dir: Model cache directory
         """
         self.device = device
         self.model_id = model_id
         self.dtype = torch.float16 if device == "cuda" else torch.float32
 
-        # 初始化Stable Diffusion管道
+        # Initialize Stable Diffusion pipeline
         print("[INIT] Loading Stable Diffusion model...")
 
-        # 添加参数来处理模型文件格式问题
+        # Add parameters to handle model file format issues
         import warnings
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message=".*safetensors.*")
@@ -42,47 +46,62 @@ class ContrastiveDefectGenerator:
                 torch_dtype=self.dtype,
                 cache_dir=cache_dir,
                 local_files_only=False,
-                use_safetensors=False  # 明确指定使用 .bin 文件
+                use_safetensors=False  # Explicitly specify to use .bin files
             ).to(device)
         
-        # 设置调度器
+        # Set up scheduler
         self.pipe.scheduler = DDIMScheduler.from_config(self.pipe.scheduler.config)
         
-        # 获取组件
+        # Get components
         self.vae = self.pipe.vae
         self.unet = self.pipe.unet
         self.tokenizer = self.pipe.tokenizer
         self.text_encoder = self.pipe.text_encoder
         
-        # 冻结所有模型参数
+        # Freeze all model parameters
         for param in self.vae.parameters():
             param.requires_grad = False
         for param in self.unet.parameters():
             param.requires_grad = False
         for param in self.text_encoder.parameters():
             param.requires_grad = False
+        
+        # torch.compile optimization for UNet (requires PyTorch 2.0+ and Triton)
+        # Disabled by default as Triton needs to be installed separately
+        # To enable, set environment variable ENABLE_TORCH_COMPILE=1
+        self._torch_compile_enabled = False
+        enable_compile = os.environ.get('ENABLE_TORCH_COMPILE', '0') == '1'
+        if enable_compile:
+            try:
+                if hasattr(torch, 'compile') and device == "cuda":
+                    print("[OPTIMIZE] Applying torch.compile to UNet...")
+                    self.unet = torch.compile(self.unet)
+                    self._torch_compile_enabled = True
+                    print("[SUCCESS] torch.compile applied!")
+            except Exception as e:
+                print(f"[INFO] torch.compile skipped: {e}")
             
         print("[SUCCESS] Model loaded successfully!")
     
     def load_image_and_mask(self, image_path: str, mask_path: str) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        加载图像和mask
+        Load image and mask
 
         Args:
-            image_path: 图像路径
-            mask_path: mask路径
+            image_path: Image path
+            mask_path: Mask path
 
         Returns:
-            image_tensor: 图像张量 [1, 3, H, W]
-            mask_tensor: mask张量 [1, 1, H, W]
+            image_tensor: Image tensor [1, 3, H, W]
+            mask_tensor: Mask tensor [1, 1, H, W]
         """
-        # 加载图像
+        # Load image
         image = Image.open(image_path).convert("RGB")
         image = image.resize((512, 512))
         image_array = np.array(image) / 255.0
         image_tensor = torch.from_numpy(image_array).permute(2, 0, 1).unsqueeze(0).to(self.dtype).to(self.device)
 
-        # 加载mask
+        # Load mask
         mask = Image.open(mask_path).convert("L")
         mask = mask.resize((512, 512))
         mask_array = np.array(mask) / 255.0
@@ -90,26 +109,91 @@ class ContrastiveDefectGenerator:
 
         return image_tensor, mask_tensor
     
+    def load_images_batch(self, image_paths: List[str], mask_paths: List[str]) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
+        """
+        Batch load multiple images and masks (optimized version)
+
+        Args:
+            image_paths: List of image paths
+            mask_paths: List of mask paths
+
+        Returns:
+            images: List of image tensors
+            masks: List of mask tensors
+        """
+        images = []
+        masks = []
+        
+        # Pre-allocate numpy arrays for batch processing
+        batch_size = len(image_paths)
+        image_batch = np.zeros((batch_size, 512, 512, 3), dtype=np.float32)
+        mask_batch = np.zeros((batch_size, 512, 512), dtype=np.float32)
+        
+        # Batch read images into memory
+        for i, (img_path, mask_path) in enumerate(zip(image_paths, mask_paths)):
+            # Load image
+            image = Image.open(img_path).convert("RGB").resize((512, 512))
+            image_batch[i] = np.array(image) / 255.0
+            
+            # Load mask
+            mask = Image.open(mask_path).convert("L").resize((512, 512))
+            mask_batch[i] = np.array(mask) / 255.0
+        
+        # Convert to tensor at once
+        image_tensor_batch = torch.from_numpy(image_batch).permute(0, 3, 1, 2).to(self.dtype).to(self.device)
+        mask_tensor_batch = torch.from_numpy(mask_batch).unsqueeze(1).to(self.dtype).to(self.device)
+        
+        # Split back to list (maintain interface compatibility)
+        for i in range(batch_size):
+            images.append(image_tensor_batch[i:i+1])
+            masks.append(mask_tensor_batch[i:i+1])
+        
+        return images, masks
+    
+    def encode_images_batch(self, images: List[torch.Tensor]) -> List[torch.Tensor]:
+        """
+        Batch encode multiple images to latent space (optimized version)
+
+        Args:
+            images: List of image tensors, each with shape [1, 3, H, W]
+
+        Returns:
+            latents_list: List of latent representations
+        """
+        if len(images) == 0:
+            return []
+        
+        # Merge into a single batch
+        batch = torch.cat(images, dim=0)  # [N, 3, H, W]
+        
+        # Encode at once
+        with torch.no_grad():
+            latents = self.vae.encode(batch * 2 - 1).latent_dist.sample()
+            latents = latents * self.vae.config.scaling_factor
+        
+        # Split back to list
+        return [latents[i:i+1] for i in range(len(images))]
+    
     def parse_prompt(self, prompt: str) -> Tuple[str, List[str]]:
         """
-        解析prompt，提取product和anomaly tokens
+        Parse prompt to extract product and anomaly tokens
         
         Args:
-            prompt: 输入prompt，如 "nutshell crack scratches"
+            prompt: Input prompt, e.g., "nutshell crack scratches"
             
         Returns:
-            product_token: 产品token
-            anomaly_tokens: 异常token列表
+            product_token: Product token
+            anomaly_tokens: List of anomaly tokens
         """
-        # 预定义的产品词汇
+        # Predefined product vocabulary
         product_keywords = [
             "nutshell", "nut", "bottle", "cable", "capsule", "hazelnut", 
             "metal", "pill", "screw", "toothbrush", "transistor", "zipper",
             "carpet", "grid", "leather", "tile", "wood"
         ]
         
-        # 预定义的异常词汇及其变体
-        # 预定义的异常词汇及其变体，包括MVTEC的所有缺陷类型
+        # Predefined anomaly vocabulary and variants
+        # Predefined anomaly vocabulary and variants, including all MVTEC defect types
         anomaly_keywords = {
             # bottle
             "broken_large": ["broken_large", "broken", "large_break", "big_break", "major_break"],
@@ -188,14 +272,14 @@ class ContrastiveDefectGenerator:
             "split_teeth": ["split_teeth", "teeth_split", "separated_teeth", "divided_teeth"],
             "squeezed_teeth": ["squeezed_teeth", "teeth_squeezed", "compressed_teeth", "crushed_teeth"],
 
-            # 通用缺陷词汇（combined -> damage）
+            # Generic defect vocabulary (combined -> damage)
             "damage": ["damage", "damaged", "defect", "defective", "fault", "faulty"],
-            "combined": ["damage", "damaged", "defect", "defective", "fault", "faulty"]  # combined映射到damage
+            "combined": ["damage", "damaged", "defect", "defective", "fault", "faulty"]  # combined maps to damage
         }
         
         words = prompt.lower().split()
         
-        # 找到产品token
+        # Find product token
         product_token = None
         for word in words:
             if word in product_keywords:
@@ -205,7 +289,7 @@ class ContrastiveDefectGenerator:
         if product_token is None:
             product_token = words[0] if words else "object"
         
-        # 找到异常tokens
+        # Find anomaly tokens
         anomaly_tokens = []
         for word in words:
             for base_anomaly, variants in anomaly_keywords.items():
@@ -215,21 +299,21 @@ class ContrastiveDefectGenerator:
                     break
         
         if not anomaly_tokens:
-            # 如果没有找到预定义的异常词汇，使用除产品词汇外的其他词汇
+            # If no predefined anomaly vocabulary found, use other words excluding product vocabulary
             anomaly_tokens = [word for word in words if word != product_token]
         
         return product_token, anomaly_tokens
     
     def encode_text(self, text: str) -> Tuple[torch.Tensor, List[int]]:
         """
-        编码文本并返回token indices
+        Encode text and return token indices
         
         Args:
-            text: 输入文本
+            text: Input text
             
         Returns:
-            text_embeddings: 文本嵌入
-            token_indices: token索引列表
+            text_embeddings: Text embeddings
+            token_indices: List of token indices
         """
         # Tokenize
         text_inputs = self.tokenizer(
@@ -240,10 +324,10 @@ class ContrastiveDefectGenerator:
             return_tensors="pt"
         )
         
-        # 获取token indices
+        # Get token indices
         token_ids = text_inputs.input_ids[0].tolist()
         
-        # 找到实际文本token的索引（排除特殊token）
+        # Find indices of actual text tokens (excluding special tokens)
         token_indices = []
         tokens = self.tokenizer.convert_ids_to_tokens(token_ids)
         
@@ -251,32 +335,36 @@ class ContrastiveDefectGenerator:
             if token not in ['<|startoftext|>', '<|endoftext|>', '<|padding|>'] and not token.startswith('<'):
                 token_indices.append(i)
         
-        # 编码
+        # Encode
         with torch.no_grad():
             text_embeddings = self.text_encoder(text_inputs.input_ids.to(self.device))[0]
-            # 确保文本嵌入的数据类型与模型一致
+            # Ensure text embeddings have the same dtype as the model
             text_embeddings = text_embeddings.to(self.dtype)
 
         return text_embeddings, token_indices
     
+    # ==============================================================================
+    # [Stage 1: VAE Encoding Module]
+    # Encodes input images into latent space representations
+    # ==============================================================================
     def encode_images(self, good_image: torch.Tensor, bad_image: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        编码图像到潜在空间
+        Encode images to latent space
         
         Args:
-            good_image: 无缺陷图像
-            bad_image: 有缺陷图像
+            good_image: Non-defective image
+            bad_image: Defective image
             
         Returns:
-            good_latents: 无缺陷图像潜在表示
-            bad_latents: 有缺陷图像潜在表示
+            good_latents: Non-defective image latent representation
+            bad_latents: Defective image latent representation
         """
         with torch.no_grad():
-            # 编码无缺陷图像
+            # Encode non-defective image
             good_latents = self.vae.encode(good_image * 2 - 1).latent_dist.sample()
             good_latents = good_latents * self.vae.config.scaling_factor
             
-            # 编码有缺陷图像
+            # Encode defective image
             bad_latents = self.vae.encode(bad_image * 2 - 1).latent_dist.sample()
             bad_latents = bad_latents * self.vae.config.scaling_factor
         
@@ -284,59 +372,63 @@ class ContrastiveDefectGenerator:
     
     def add_noise(self, latents: torch.Tensor, timestep: int, noise: torch.Tensor) -> torch.Tensor:
         """
-        添加噪声到潜在表示
+        Add noise to latent representation
 
         Args:
-            latents: 潜在表示
-            timestep: 时间步
-            noise: 噪声
+            latents: Latent representation
+            timestep: Time step
+            noise: Noise
 
         Returns:
-            noisy_latents: 加噪后的潜在表示
+            noisy_latents: Noisy latent representation
         """
-        # 获取噪声调度参数
+        # Get noise schedule parameters
         alpha_prod_t = self.pipe.scheduler.alphas_cumprod[timestep].to(latents.device, latents.dtype)
         beta_prod_t = (1 - alpha_prod_t).to(latents.device, latents.dtype)
 
-        # 确保噪声与latents类型匹配
+        # Ensure noise dtype matches latents
         noise = noise.to(latents.dtype)
 
-        # 添加噪声
+        # Add noise
         noisy_latents = (alpha_prod_t ** 0.5) * latents + (beta_prod_t ** 0.5) * noise
 
         return noisy_latents
     
     def extract_attention_maps_from_unet(self, latents: torch.Tensor, text_embeddings: torch.Tensor) -> Dict[str, torch.Tensor]:
         """
-        通过UNet前向传播提取注意力图
+        Extract attention maps through UNet forward pass
 
         Args:
-            latents: 潜在表示
-            text_embeddings: 文本嵌入
+            latents: Latent representation
+            text_embeddings: Text embeddings
 
         Returns:
-            attention_maps: 模拟的注意力图字典
+            attention_maps: Dictionary of simulated attention maps
         """
-        # 这里我们创建一个简化的注意力图提取
-        # 在实际应用中，你可能需要修改UNet来直接返回注意力权重
+        # Here we create a simplified attention map extraction
+        # In actual applications, you may need to modify UNet to directly return attention weights
 
         attention_maps = {}
 
-        # 获取latents的空间维度
+        # Get spatial dimensions of latents
         _, _, h, w = latents.shape
         num_tokens = text_embeddings.shape[1]
 
-        # 创建模拟的注意力图
-        # 在实际实现中，这应该从UNet的交叉注意力层获取
-        for layer_idx in range(4):  # 假设有4个注意力层
-            # 创建随机注意力图作为占位符
-            # 实际应用中应该从UNet内部获取真实的注意力权重
+        # Create simulated attention maps
+        # In actual implementation, this should be obtained from UNet's cross-attention layers
+        for layer_idx in range(4):  # Assume 4 attention layers
+            # Create random attention maps as placeholders
+            # In actual applications, real attention weights should be obtained from UNet internals
             attention_map = torch.randn(2, h, w, num_tokens, device=latents.device)
             attention_map = F.softmax(attention_map.view(2, h*w, num_tokens), dim=1).view(2, h, w, num_tokens)
             attention_maps[f"layer_{layer_idx}"] = attention_map
 
         return attention_maps
     
+    # ==============================================================================
+    # [Stage 4: Attention-Guided Optimization Module (Contrastive Loss)]
+    # Computes Focus Loss (Product) and Suppression Loss (Anomaly)
+    # ==============================================================================
     def compute_contrastive_loss(self,
                                 attention_maps: Dict[str, torch.Tensor],
                                 product_token_indices: List[int],
@@ -345,18 +437,18 @@ class ContrastiveDefectGenerator:
                                 bad_masks_list: List[torch.Tensor],
                                 current_defect_idx: int = 0) -> torch.Tensor:
         """
-        计算对比损失
+        Compute contrastive loss
 
         Args:
-            attention_maps: 注意力图
-            product_token_indices: 产品token索引
-            anomaly_token_indices: 异常token索引
-            good_mask: 无缺陷图像的物体mask
-            bad_masks_list: 有缺陷图像的缺陷mask列表
-            current_defect_idx: 当前优化的缺陷图像索引
+            attention_maps: Attention maps
+            product_token_indices: Product token indices
+            anomaly_token_indices: Anomaly token indices
+            good_mask: Object mask for non-defective image
+            bad_masks_list: List of defect masks for defective images
+            current_defect_idx: Index of current defect image being optimized
 
         Returns:
-            total_loss: 总损失
+            total_loss: Total loss
         """
         total_loss = 0.0
         num_maps = 0
@@ -367,44 +459,44 @@ class ContrastiveDefectGenerator:
                 
             _, h, w, num_tokens = attention_map.shape
             
-            # 调整mask尺寸到注意力图尺寸
+            # Resize mask to attention map size
             good_mask_resized = F.interpolate(good_mask.float(), size=(h, w), mode='nearest').squeeze(1)
 
-            # 使用当前优化的缺陷mask
+            # Use current defect mask being optimized
             current_bad_mask = bad_masks_list[current_defect_idx]
             bad_mask_resized = F.interpolate(current_bad_mask.float(), size=(h, w), mode='nearest').squeeze(1)
             
-            # 第一部分损失：产品token在无缺陷图像物体位置的注意力
+            # First part of loss: Product token attention at object position in non-defective image
             loss1 = 0.0
             for token_idx in product_token_indices:
                 if token_idx < num_tokens:
-                    # 获取产品token的注意力
-                    product_attention = attention_map[0, :, :, token_idx]  # 无缺陷图像（batch中第一个）
+                    # Get attention for product token
+                    product_attention = attention_map[0, :, :, token_idx]  # Non-defective image (first in batch)
                     
-                    # Softmax归一化
+                    # Softmax normalization
                     product_attention_flat = product_attention.view(-1)
                     product_attention_norm = F.softmax(product_attention_flat, dim=0).view(h, w)
                     
-                    # 与物体mask做点积并求和
+                    # Dot product with object mask and sum
                     attention_score = torch.sum(product_attention_norm * good_mask_resized[0])
                     loss1 += 1 - attention_score
             
-            # 第二部分损失：异常token在有缺陷图像缺陷位置的注意力
+            # Second part of loss: Anomaly token attention at defect position in defective image
             loss2 = 0.0
             for token_idx in anomaly_token_indices:
                 if token_idx < num_tokens:
-                    # 获取异常token的注意力
-                    anomaly_attention = attention_map[1, :, :, token_idx]  # 有缺陷图像（batch中第二个）
+                    # Get attention for anomaly token
+                    anomaly_attention = attention_map[1, :, :, token_idx]  # Defective image (second in batch)
                     
-                    # Softmax归一化
+                    # Softmax normalization
                     anomaly_attention_flat = anomaly_attention.view(-1)
                     anomaly_attention_norm = F.softmax(anomaly_attention_flat, dim=0).view(h, w)
                     
-                    # 与缺陷mask做点积并求和
+                    # Dot product with defect mask and sum
                     attention_score = torch.sum(anomaly_attention_norm * bad_mask_resized[0])
                     loss2 += 1 - attention_score
             
-            # 组合两部分损失
+            # Combine both parts of loss
             combined_loss = loss1 + loss2
             total_loss += combined_loss
             num_maps += 1
@@ -419,119 +511,123 @@ class ContrastiveDefectGenerator:
                                 bad_latents: torch.Tensor,
                                 bad_mask: torch.Tensor) -> torch.Tensor:
         """
-        将缺陷特征从有缺陷图像转移到无缺陷图像
+        Transfer defect features from defective image to non-defective image
 
         Args:
-            good_latents: 无缺陷图像潜在表示
-            bad_latents: 有缺陷图像潜在表示
-            bad_mask: 缺陷位置mask
+            good_latents: Non-defective image latent representation
+            bad_latents: Defective image latent representation
+            bad_mask: Defect position mask
 
         Returns:
-            updated_latents: 更新后的潜在表示
+            updated_latents: Updated latent representation
         """
-        # 调整mask尺寸到潜在空间
+        # Resize mask to latent space dimensions
         _, _, h, w = good_latents.shape
         bad_mask_latent = F.interpolate(bad_mask.float(), size=(h, w), mode='nearest').to(good_latents.dtype)
 
-        # 将缺陷区域的特征从bad_latents转移到good_latents
+        # Transfer features from defect region of bad_latents to good_latents
         updated_latents = good_latents * (1 - bad_mask_latent) + bad_latents * bad_mask_latent
 
         return updated_latents
 
+    # ==============================================================================
+    # [Stage 2: IoA-based Feature Alignment Module (Search Strategy)]
+    # Finds optimal defect placement maximizing Intersection-over-Area
+    # ==============================================================================
     def find_random_placement(self,
                             defect_mask: torch.Tensor,
                             object_mask: torch.Tensor,
                             placement_range: float = 1.0) -> Tuple[torch.Tensor, int, int]:
         """
-        在物体mask内找到一个随机位置放置缺陷
+        Find a random position within the object mask to place the defect
 
         Args:
-            defect_mask: 缺陷mask [1, 1, H, W]
-            object_mask: 物体mask [1, 1, H, W]
-            placement_range: 放置范围倍数 (0.5=小范围, 1.0=全范围, 2.0=大范围)
+            defect_mask: Defect mask [1, 1, H, W]
+            object_mask: Object mask [1, 1, H, W]
+            placement_range: Placement range multiplier (0.5=small range, 1.0=full range, 2.0=large range)
 
         Returns:
-            new_mask: 新位置的缺陷mask
-            offset_y, offset_x: 偏移量（用于显示）
+            new_mask: Defect mask at new position
+            offset_y, offset_x: Offsets (for display)
         """
-        # 转换为numpy进行处理
+        # Convert to numpy for processing
         defect_np = defect_mask.cpu().squeeze().numpy()
         object_np = object_mask.cpu().squeeze().numpy()
 
         h, w = defect_np.shape
 
-        # 获取缺陷和物体的坐标
+        # Get coordinates of defect and object
         defect_coords = np.where(defect_np > 0.5)
         object_coords = np.where(object_np > 0.5)
 
         if len(defect_coords[0]) == 0 or len(object_coords[0]) == 0:
             return defect_mask.clone(), 0, 0
 
-        # 获取缺陷的边界框
+        # Get defect bounding box
         defect_min_y, defect_max_y = defect_coords[0].min(), defect_coords[0].max()
         defect_min_x, defect_max_x = defect_coords[1].min(), defect_coords[1].max()
         defect_h = defect_max_y - defect_min_y + 1
         defect_w = defect_max_x - defect_min_x + 1
 
-        # 获取物体的边界框
+        # Get object bounding box
         obj_min_y, obj_max_y = object_coords[0].min(), object_coords[0].max()
         obj_min_x, obj_max_x = object_coords[1].min(), object_coords[1].max()
 
-        # 计算可放置的范围（确保缺陷完全在物体内）
+        # Calculate available placement range (ensure defect is fully within object)
         available_h = obj_max_y - obj_min_y + 1 - defect_h
         available_w = obj_max_x - obj_min_x + 1 - defect_w
 
         if available_h <= 0 or available_w <= 0:
-            # 缺陷太大，无法完全放入物体内，返回原位置
+            # Defect too large to fit entirely inside object, keep original position
             print(f"     Defect too large for object, keeping original position")
             return defect_mask.clone(), 0, 0
 
-        # 根据placement_range调整可用范围
+        # Adjust available range based on placement_range
         if placement_range != 1.0:
-            # 计算范围中心
+            # Calculate range center
             center_h = available_h // 2
             center_w = available_w // 2
 
-            # 调整范围大小
+            # Adjust range size
             adjusted_h = max(1, int(available_h * placement_range))
             adjusted_w = max(1, int(available_w * placement_range))
 
-            # 计算新的起始位置（保持居中）
+            # Calculate new start position (keep centered)
             start_h = max(0, center_h - adjusted_h // 2)
             start_w = max(0, center_w - adjusted_w // 2)
 
-            # 确保不超出边界
+            # Ensure not exceeding bounds
             end_h = min(available_h, start_h + adjusted_h)
             end_w = min(available_w, start_w + adjusted_w)
 
             available_h = end_h - start_h
             available_w = end_w - start_w
 
-            # 随机选择新的左上角位置
+            # Randomly select new top-left position
             new_top_y = obj_min_y + start_h + random.randint(0, max(0, available_h - 1))
             new_top_x = obj_min_x + start_w + random.randint(0, max(0, available_w - 1))
         else:
-            # 使用全范围
+            # Use full range
             new_top_y = obj_min_y + random.randint(0, available_h)
             new_top_x = obj_min_x + random.randint(0, available_w)
 
-        # 计算偏移量
+        # Calculate offset
         offset_y = new_top_y - defect_min_y
         offset_x = new_top_x - defect_min_x
 
-        # 创建新的mask
+        # Create new mask
         new_mask_np = np.zeros_like(defect_np)
 
-        # 将缺陷复制到新位置
+        # Copy defect to new position
         for i, (y, x) in enumerate(zip(defect_coords[0], defect_coords[1])):
             new_y = y + offset_y
             new_x = x + offset_x
 
-            # 确保新坐标在范围内
+            # Ensure new coordinates are within bounds
             if 0 <= new_y < h and 0 <= new_x < w:
                 new_mask_np[new_y, new_x] = defect_np[y, x]
 
-        # 转换回tensor
+        # Convert back to tensor
         new_mask = torch.from_numpy(new_mask_np).unsqueeze(0).unsqueeze(0).to(defect_mask.device)
 
         return new_mask, offset_y, offset_x
@@ -545,39 +641,39 @@ class ContrastiveDefectGenerator:
                                   current_step: int = 0,
                                   total_steps: int = 1) -> Tuple[torch.Tensor, List[torch.Tensor]]:
         """
-        将多个缺陷应用到无缺陷图像上，支持特征对齐
+        Apply multiple defects to non-defective image, with feature alignment support
 
         Args:
-            good_latents: 无缺陷图像潜在表示
-            bad_latents_list: 缺陷图像潜在表示列表
-            bad_masks_list: 缺陷mask列表
-            good_mask: 物体mask
-            alignment_info: 特征对齐信息
-            current_step: 当前优化步骤
-            total_steps: 总优化步骤
+            good_latents: Non-defective image latent representation
+            bad_latents_list: List of defect image latent representations
+            bad_masks_list: List of defect masks
+            good_mask: Object mask
+            alignment_info: Feature alignment information
+            current_step: Current optimization step
+            total_steps: Total optimization steps
 
         Returns:
-            updated_latents: 更新后的潜在表示
-            actual_masks: 实际使用的mask列表
+            updated_latents: Updated latent representation
+            actual_masks: List of actually used masks
         """
         updated_latents = good_latents.clone()
         _, _, h, w = good_latents.shape
 
-        # 调整物体mask到潜在空间
+        # Resize object mask to latent space
         good_mask_latent = F.interpolate(good_mask.float(), size=(h, w), mode='nearest')
 
-        # 记录实际使用的mask
+        # Record actually used masks
         actual_masks = []
 
         for i, (bad_latents, bad_mask) in enumerate(zip(bad_latents_list, bad_masks_list)):
             print(f"   Applying defect {i+1}/{len(bad_latents_list)}...")
 
-            # 获取当前缺陷的对齐信息
+            # Get alignment info for current defect
             if alignment_info and i < len(alignment_info):
                 align_info = alignment_info[i]
                 if align_info['needs_alignment']:
-                    # 计算当前步骤的插值位置
-                    progress = current_step / max(total_steps - 1, 1)  # 0到1的进度
+                    # Calculate current step interpolation position
+                    progress = current_step / max(total_steps - 1, 1)  # Progress from 0 to 1
                     current_mask = self.interpolate_mask_position(
                         align_info['original_mask'],
                         align_info['target_position'],
@@ -591,13 +687,13 @@ class ContrastiveDefectGenerator:
                 current_mask = bad_mask
                 print(f"     Using original position (no alignment)")
 
-            # 调整mask到潜在空间尺寸
+            # Resize mask to latent space dimensions
             current_mask_latent = F.interpolate(current_mask.float(), size=(h, w), mode='nearest')
 
-            # 确保缺陷只在物体区域内
+            # Ensure defect is only within object region
             effective_mask = (current_mask_latent * good_mask_latent).to(good_latents.dtype)
 
-            # 应用缺陷到好图像
+            # Apply defect to good image
             updated_latents = updated_latents * (1 - effective_mask) + bad_latents * effective_mask
             actual_masks.append(current_mask)
 
@@ -607,22 +703,22 @@ class ContrastiveDefectGenerator:
                            latents: torch.Tensor,
                            variation_strength: float = 0.0) -> torch.Tensor:
         """
-        为潜在表示添加随机变化
+        Add random variation to latent representation
 
         Args:
-            latents: 输入的潜在表示
-            variation_strength: 变化强度 (0.0-1.0)
+            latents: Input latent representation
+            variation_strength: Variation strength (0.0-1.0)
 
         Returns:
-            varied_latents: 添加变化后的潜在表示
+            varied_latents: Latent representation with added variation
         """
         if variation_strength <= 0.0:
             return latents
 
-        # 生成随机噪声
+        # Generate random noise
         noise = torch.randn_like(latents) * variation_strength * 0.1
 
-        # 添加随机变化
+        # Add random variation
         varied_latents = latents + noise
 
         return varied_latents
@@ -631,14 +727,14 @@ class ContrastiveDefectGenerator:
                                       masks: List[torch.Tensor],
                                       variation_strength: float = 0.0) -> List[torch.Tensor]:
         """
-        为缺陷mask添加随机变化
+        Add random variation to defect masks
 
         Args:
-            masks: 缺陷mask列表
-            variation_strength: 变化强度 (0.0-1.0)
+            masks: List of defect masks
+            variation_strength: Variation strength (0.0-1.0)
 
         Returns:
-            varied_masks: 变化后的mask列表
+            varied_masks: List of varied masks
         """
         if variation_strength <= 0.0:
             return masks
@@ -646,33 +742,33 @@ class ContrastiveDefectGenerator:
         varied_masks = []
         for mask in masks:
             if variation_strength > 0.0:
-                # 对mask进行轻微的形态学变化
+                # Apply slight morphological changes to mask
                 mask_np = mask.cpu().squeeze().numpy()
 
-                # 确保数据类型为uint8
+                # Ensure data type is uint8
                 mask_np = (mask_np * 255).astype(np.uint8)
 
-                # 随机膨胀或腐蚀
+                # Random dilation or erosion
                 if random.random() < 0.5:
-                    # 膨胀（扩大缺陷）
+                    # Dilation (enlarge defect)
                     kernel_size = int(3 + variation_strength * 5)
                     kernel = np.ones((kernel_size, kernel_size), np.uint8)
                     mask_np = cv2.dilate(mask_np, kernel, iterations=1)
                 else:
-                    # 腐蚀（缩小缺陷）
+                    # Erosion (shrink defect)
                     kernel_size = int(2 + variation_strength * 3)
                     kernel = np.ones((kernel_size, kernel_size), np.uint8)
                     mask_np = cv2.erode(mask_np, kernel, iterations=1)
 
-                # 转换回float并归一化
+                # Convert back to float and normalize
                 mask_np = mask_np.astype(np.float32) / 255.0
 
-                # 添加随机噪声到mask边缘
+                # Add random noise to mask edges
                 if variation_strength > 0.3:
                     noise = np.random.random(mask_np.shape) * variation_strength * 0.3
                     mask_np = np.clip(mask_np + noise, 0, 1)
 
-                # 转换回tensor
+                # Convert back to tensor
                 varied_mask = torch.from_numpy(mask_np).unsqueeze(0).unsqueeze(0).to(mask.device)
                 varied_masks.append(varied_mask)
             else:
@@ -680,27 +776,31 @@ class ContrastiveDefectGenerator:
 
         return varied_masks
 
+    # ==============================================================================
+    # [Stage 5: Decoding and Blending Module]
+    # Decodes latents and applies feathered blending for seamless integration
+    # ==============================================================================
     def create_feathered_mask(self, mask: np.ndarray, feather_radius: int = 10) -> np.ndarray:
         """
-        创建羽化边缘的mask
+        Create mask with feathered edges
 
         Args:
-            mask: 原始mask (0-255)
-            feather_radius: 羽化半径
+            mask: Original mask (0-255)
+            feather_radius: Feather radius
 
         Returns:
-            feathered_mask: 羽化后的mask (0-1)
+            feathered_mask: Feathered mask (0-1)
         """
-        # 确保mask是0-255范围
+        # Ensure mask is in 0-255 range
         if mask.max() <= 1.0:
             mask = (mask * 255).astype(np.uint8)
         else:
             mask = mask.astype(np.uint8)
 
-        # 使用高斯模糊进行羽化
+        # Use Gaussian blur for feathering
         feathered = cv2.GaussianBlur(mask, (feather_radius*2+1, feather_radius*2+1), feather_radius/3)
 
-        # 归一化到0-1范围
+        # Normalize to 0-1 range
         feathered = feathered.astype(np.float32) / 255.0
 
         return feathered
@@ -711,45 +811,45 @@ class ContrastiveDefectGenerator:
                                        mask: np.ndarray,
                                        feather_radius: int = 10) -> np.ndarray:
         """
-        使用羽化mask将生成图像的缺陷部分与原始图像合并
+        Blend defect portion of generated image with original image using feathered mask
 
         Args:
-            original_image: 原始图像 (H, W, 3) 范围0-255
-            generated_image: 生成图像 (H, W, 3) 范围0-255
-            mask: 缺陷mask (H, W) 范围0-255，白色为缺陷区域
-            feather_radius: 羽化半径
+            original_image: Original image (H, W, 3) range 0-255
+            generated_image: Generated image (H, W, 3) range 0-255
+            mask: Defect mask (H, W) range 0-255, white is defect region
+            feather_radius: Feather radius
 
         Returns:
-            blended_image: 合并后的图像 (H, W, 3) 范围0-255
+            blended_image: Blended image (H, W, 3) range 0-255
         """
-        # 创建羽化mask
+        # Create feathered mask
         feathered_mask = self.create_feathered_mask(mask, feather_radius)
 
-        # 确保图像数据类型正确
+        # Ensure correct image data types
         original_image = original_image.astype(np.float32)
         generated_image = generated_image.astype(np.float32)
 
-        # 确保mask形状正确
+        # Ensure mask shape is correct
         if len(feathered_mask.shape) == 4:  # (1, 1, H, W)
             feathered_mask = feathered_mask.squeeze()  # (H, W)
         elif len(feathered_mask.shape) == 3:  # (1, H, W) or (H, W, 1)
             feathered_mask = feathered_mask.squeeze()  # (H, W)
 
-        # 调整mask尺寸以匹配图像
+        # Resize mask to match image
         if feathered_mask.shape != original_image.shape[:2]:
             import cv2
             feathered_mask = cv2.resize(feathered_mask, (original_image.shape[1], original_image.shape[0]))
 
-        # 扩展mask维度以匹配图像通道
+        # Expand mask dimensions to match image channels
         if len(feathered_mask.shape) == 2:
             feathered_mask = np.expand_dims(feathered_mask, axis=2)
         feathered_mask = np.repeat(feathered_mask, 3, axis=2)
 
-        # 使用羽化mask进行混合
-        # mask=1的地方使用生成图像，mask=0的地方使用原始图像
+        # Blend using feathered mask
+        # mask=1 uses generated image, mask=0 uses original image
         blended_image = original_image * (1 - feathered_mask) + generated_image * feathered_mask
 
-        # 转换回uint8
+        # Convert back to uint8
         blended_image = np.clip(blended_image, 0, 255).astype(np.uint8)
 
         return blended_image
@@ -762,27 +862,27 @@ class ContrastiveDefectGenerator:
                              defect_mask: np.ndarray,
                              non_feathered_image: np.ndarray = None) -> np.ndarray:
         """
-        创建对比网格图像
+        Create comparison grid image
 
         Args:
-            original_image: 原始无缺陷图像
-            generated_image: 生成的缺陷图像
-            blended_image: 羽化合并图像
-            reference_bad_image: 参考缺陷图像
-            defect_mask: 缺陷mask
-            non_feathered_image: 无羽化合并图像
+            original_image: Original non-defective image
+            generated_image: Generated defect image
+            blended_image: Feathered blended image
+            reference_bad_image: Reference defect image
+            defect_mask: Defect mask
+            non_feathered_image: Non-feathered blended image
 
         Returns:
-            comparison_grid: 对比网格图像
+            comparison_grid: Comparison grid image
         """
-        # 确保所有图像尺寸一致
+        # Ensure all images have consistent dimensions
         h, w = original_image.shape[:2]
 
-        # 检查图像尺寸是否有效
+        # Check if image dimensions are valid
         if h <= 0 or w <= 0:
             raise ValueError(f"Invalid image dimensions: h={h}, w={w}")
 
-        # 调整所有图像到相同尺寸
+        # Resize all images to same dimensions
         images = [original_image, generated_image, blended_image, reference_bad_image]
         resized_images = []
         for i, img in enumerate(images):
@@ -796,13 +896,13 @@ class ContrastiveDefectGenerator:
                 img = cv2.resize(img, (w, h))
             resized_images.append(img)
 
-        # 创建mask可视化（转换为3通道）
+        # Create mask visualization (convert to 3 channels)
         if defect_mask is None:
             raise ValueError("defect_mask is None")
         if len(defect_mask.shape) < 2:
             raise ValueError(f"defect_mask has invalid shape: {defect_mask.shape}")
 
-        # 确保defect_mask是2D数组
+        # Ensure defect_mask is 2D array
         if len(defect_mask.shape) == 4:  # (1, 1, H, W)
             defect_mask_2d = defect_mask.squeeze()  # (H, W)
         elif len(defect_mask.shape) == 3:  # (1, H, W) or (H, W, 1)
@@ -814,40 +914,40 @@ class ContrastiveDefectGenerator:
         if mask_vis.max() <= 1.0:
             mask_vis = (mask_vis * 255).astype(np.uint8)
 
-        # 检查mask尺寸并调整
-        if mask_vis.shape[:2] != (h, w):
+        # Check mask dimensions and resize
+        if mask_vis.shape[:2] != (h, w)::
             mask_vis = cv2.resize(mask_vis, (w, h))
 
-        # 创建网格布局
+        # Create grid layout
         if non_feathered_image is not None:
-            # 如果有无羽化图像，创建2x4网格
-            # 第一行：原始图像、生成图像、无羽化合并、羽化合并
-            # 第二行：参考缺陷图像、缺陷mask、空白、空白
+            # If non-feathered image exists, create 2x4 grid
+            # Row 1: Original image, generated image, non-feathered blend, feathered blend
+            # Row 2: Reference defect image, defect mask, blank, blank
             non_feathered_resized = cv2.resize(non_feathered_image, (w, h)) if non_feathered_image.shape[:2] != (h, w) else non_feathered_image
 
             top_row = np.hstack([resized_images[0], resized_images[1], non_feathered_resized, resized_images[2]])
 
-            # 创建空白图像
+            # Create blank image
             blank = np.ones_like(resized_images[0]) * 255
             bottom_row = np.hstack([resized_images[3], mask_vis, blank, blank])
         else:
-            # 原始2x3网格
-            # 第一行：原始图像、生成图像、羽化合并图像
-            # 第二行：参考缺陷图像、缺陷mask、空白
+            # Original 2x3 grid
+            # Row 1: Original image, generated image, feathered blended image
+            # Row 2: Reference defect image, defect mask, blank
             top_row = np.hstack([resized_images[0], resized_images[1], resized_images[2]])
 
-            # 创建空白图像
+            # Create blank image
             blank = np.ones_like(resized_images[0]) * 255
             bottom_row = np.hstack([resized_images[3], mask_vis, blank])
 
-        # 组合成完整网格
+        # Combine into complete grid
         comparison_grid = np.vstack([top_row, bottom_row])
 
-        # 添加标签区域（简单的白色条带）
+        # Add label area (simple white strip)
         label_height = 30
         grid_h, grid_w = comparison_grid.shape[:2]
 
-        # 为每个子图添加标签背景
+        # Add label background for each sub-image
         labeled_grid = np.ones((grid_h + label_height * 2, grid_w, 3), dtype=np.uint8) * 255
         labeled_grid[label_height:label_height + grid_h] = comparison_grid
 
@@ -855,35 +955,35 @@ class ContrastiveDefectGenerator:
 
     def calculate_feature_alignment(self, bad_masks: List[torch.Tensor], good_mask: torch.Tensor, ioa_threshold: float):
         """
-        计算特征对齐信息
+        Calculate feature alignment information
 
         Args:
-            bad_masks: 缺陷mask列表
-            good_mask: 正常图物体mask
-            ioa_threshold: IoA阈值
+            bad_masks: List of defect masks
+            good_mask: Normal image object mask
+            ioa_threshold: IoA threshold
 
         Returns:
-            alignment_info: 对齐信息列表
+            alignment_info: List of alignment information
         """
         alignment_info = []
 
         for i, bad_mask in enumerate(bad_masks):
-            # 计算交集
+            # Calculate intersection
             intersection = torch.logical_and(bad_mask > 0.5, good_mask > 0.5)
             intersection_pixels = torch.sum(intersection).item()
 
-            # 计算缺陷mask的总像素数
+            # Calculate total pixels of defect mask
             bad_mask_pixels = torch.sum(bad_mask > 0.5).item()
 
-            # 计算IoA (Intersection over Area)
-            ioa = intersection_pixels / max(bad_mask_pixels, 1)  # 避免除零
+            # Calculate IoA (Intersection over Area)
+            ioa = intersection_pixels / max(bad_mask_pixels, 1)  # Avoid division by zero
 
-            # 判断是否需要对齐
+            # Determine if alignment is needed
             needs_alignment = ioa < ioa_threshold
 
             target_position = None
             if needs_alignment:
-                # 在正常图mask区域内随机选择目标位置
+                # Randomly select target position within normal image mask region
                 target_position = self.find_target_position(bad_mask, good_mask, ioa_threshold)
 
             alignment_info.append({
@@ -897,22 +997,22 @@ class ContrastiveDefectGenerator:
 
     def find_target_position(self, bad_mask: torch.Tensor, good_mask: torch.Tensor, target_ioa: float):
         """
-        在正常图mask区域内找到目标位置
+        Find target position within normal image mask region
 
         Args:
-            bad_mask: 缺陷mask
-            good_mask: 正常图物体mask
-            target_ioa: 目标IoA值
+            bad_mask: Defect mask
+            good_mask: Normal image object mask
+            target_ioa: Target IoA value
 
         Returns:
-            target_position: 目标位置 (y, x)
+            target_position: Target position (y, x)
         """
         import random
 
-        # 获取缺陷mask的尺寸
+        # Get defect mask dimensions
         bad_mask_binary = bad_mask > 0.5
 
-        # 处理4D tensor: [1, 1, H, W] -> 只取最后两个维度
+        # Handle 4D tensor: [1, 1, H, W] -> only take last two dimensions
         if bad_mask_binary.dim() == 4:
             bad_mask_binary = bad_mask_binary.squeeze(0).squeeze(0)  # [H, W]
         elif bad_mask_binary.dim() == 3:
@@ -928,10 +1028,10 @@ class ContrastiveDefectGenerator:
         bad_height = bad_max_h - bad_min_h + 1
         bad_width = bad_max_w - bad_min_w + 1
 
-        # 获取正常图mask的有效区域
+        # Get valid region of normal image mask
         good_mask_binary = good_mask > 0.5
 
-        # 处理4D tensor: [1, 1, H, W] -> 只取最后两个维度
+        # Handle 4D tensor: [1, 1, H, W] -> only take last two dimensions
         if good_mask_binary.dim() == 4:
             good_mask_binary = good_mask_binary.squeeze(0).squeeze(0)  # [H, W]
         elif good_mask_binary.dim() == 3:
@@ -945,13 +1045,13 @@ class ContrastiveDefectGenerator:
         good_min_h, good_max_h = good_h.min().item(), good_h.max().item()
         good_min_w, good_max_w = good_w.min().item(), good_w.max().item()
 
-        # 尝试多次找到合适的位置
+        # Try multiple times to find suitable position
         max_attempts = 100
         best_position = (good_min_h, good_min_w)
         best_ioa = 0
 
         for _ in range(max_attempts):
-            # 随机选择位置，确保缺陷完全在正常图mask内
+            # Randomly select position, ensure defect is fully within normal image mask
             max_start_h = max(good_min_h, good_max_h - bad_height + 1)
             max_start_w = max(good_min_w, good_max_w - bad_width + 1)
 
@@ -961,24 +1061,30 @@ class ContrastiveDefectGenerator:
             start_h = random.randint(good_min_h, max_start_h)
             start_w = random.randint(good_min_w, max_start_w)
 
-            # 计算在这个位置的IoA
+            # Calculate IoA at this position - use vectorized operations instead of nested loops
             test_mask = torch.zeros_like(good_mask)
-            end_h = min(start_h + bad_height, good_mask.shape[0])
-            end_w = min(start_w + bad_width, good_mask.shape[1])
+            end_h = min(start_h + bad_height, good_mask.shape[-2] if good_mask.dim() > 2 else good_mask.shape[0])
+            end_w = min(start_w + bad_width, good_mask.shape[-1] if good_mask.dim() > 2 else good_mask.shape[1])
 
-            # 将缺陷mask放置到测试位置
-            mask_h_offset = bad_min_h
-            mask_w_offset = bad_min_w
+            # Use slicing to directly copy defect region (vectorized)
+            src_h_start = bad_min_h
+            src_h_end = bad_min_h + (end_h - start_h)
+            src_w_start = bad_min_w
+            src_w_end = bad_min_w + (end_w - start_w)
+            
+            # Ensure source and target region dimensions match
+            if good_mask.dim() == 4:
+                bad_mask_region = bad_mask[:, :, src_h_start:src_h_end, src_w_start:src_w_end]
+                test_mask[:, :, start_h:end_h, start_w:end_w] = (bad_mask_region > 0.5).float()
+            elif good_mask.dim() == 2:
+                bad_mask_2d = bad_mask.squeeze() if bad_mask.dim() > 2 else bad_mask
+                bad_mask_region = bad_mask_2d[src_h_start:src_h_end, src_w_start:src_w_end]
+                test_mask[start_h:end_h, start_w:end_w] = (bad_mask_region > 0.5).float()
+            else:
+                bad_mask_region = bad_mask[src_h_start:src_h_end, src_w_start:src_w_end]
+                test_mask[start_h:end_h, start_w:end_w] = (bad_mask_region > 0.5).float()
 
-            for h in range(start_h, end_h):
-                for w in range(start_w, end_w):
-                    mask_h = h - start_h + mask_h_offset
-                    mask_w = w - start_w + mask_w_offset
-                    if (mask_h < bad_mask.shape[0] and mask_w < bad_mask.shape[1] and
-                        bad_mask[mask_h, mask_w] > 0.5):
-                        test_mask[h, w] = 1.0
-
-            # 计算IoA
+            # Calculate IoA
             intersection = torch.logical_and(test_mask > 0.5, good_mask > 0.5)
             intersection_pixels = torch.sum(intersection).item()
             test_mask_pixels = torch.sum(test_mask > 0.5).item()
@@ -989,7 +1095,7 @@ class ContrastiveDefectGenerator:
                     best_ioa = ioa
                     best_position = (start_h, start_w)
 
-                    # 如果达到目标IoA，提前退出
+                    # If target IoA is reached, exit early
                     if ioa >= target_ioa:
                         break
 
@@ -997,45 +1103,45 @@ class ContrastiveDefectGenerator:
 
     def interpolate_mask_position(self, original_mask: torch.Tensor, target_position: Tuple[int, int], progress: float):
         """
-        在原始位置和目标位置之间插值mask位置
+        Interpolate mask position between original and target positions
 
         Args:
-            original_mask: 原始mask
-            target_position: 目标位置 (y, x)
-            progress: 插值进度 (0.0 到 1.0)
+            original_mask: Original mask
+            target_position: Target position (y, x)
+            progress: Interpolation progress (0.0 to 1.0)
 
         Returns:
-            interpolated_mask: 插值后的mask
+            interpolated_mask: Interpolated mask
         """
         if progress <= 0.0:
             return original_mask.clone()
         elif progress >= 1.0:
-            # 完全移动到目标位置
+            # Fully move to target position
             return self.move_mask_to_position(original_mask, target_position)
         else:
-            # 插值移动
+            # Interpolated movement
             return self.move_mask_to_position_with_interpolation(original_mask, target_position, progress)
 
     def move_mask_to_position(self, mask: torch.Tensor, target_position: Tuple[int, int]):
         """
-        将mask移动到目标位置
+        Move mask to target position
 
         Args:
-            mask: 原始mask
-            target_position: 目标位置 (y, x)
+            mask: Original mask
+            target_position: Target position (y, x)
 
         Returns:
-            moved_mask: 移动后的mask
+            moved_mask: Moved mask
         """
-        # 创建新的mask
+        # Create new mask
         new_mask = torch.zeros_like(mask)
 
-        # 获取原始mask的边界
+        # Get original mask boundaries
         mask_binary = mask > 0.5
         if not torch.any(mask_binary):
             return new_mask
 
-        # 处理4D tensor: [1, 1, H, W] -> 只取最后两个维度
+        # Handle 4D tensor: [1, 1, H, W] -> only take last two dimensions
         if mask_binary.dim() == 4:
             mask_binary = mask_binary.squeeze(0).squeeze(0)  # [H, W]
         elif mask_binary.dim() == 3:
@@ -1045,12 +1151,12 @@ class ContrastiveDefectGenerator:
         min_h, max_h = mask_h.min().item(), mask_h.max().item()
         min_w, max_w = mask_w.min().item(), mask_w.max().item()
 
-        # 计算偏移
+        # Calculate offset
         target_y, target_x = target_position
         offset_y = target_y - min_h
         offset_x = target_x - min_w
 
-        # 处理4D tensor: 获取2D mask进行操作
+        # Handle 4D tensor: get 2D mask for operation
         if mask.dim() == 4:
             mask_2d = mask.squeeze(0).squeeze(0)  # [H, W]
             new_mask_2d = new_mask.squeeze(0).squeeze(0)  # [H, W]
@@ -1061,8 +1167,8 @@ class ContrastiveDefectGenerator:
             mask_2d = mask
             new_mask_2d = new_mask
 
-        # 移动mask
-        for h in range(min_h, max_h + 1):
+        # Move mask
+        for h in range(min_h, max_h + 1)::
             for w in range(min_w, max_w + 1):
                 if mask_2d[h, w].item() > 0.5:
                     new_h = h + offset_y
@@ -1070,7 +1176,7 @@ class ContrastiveDefectGenerator:
                     if (0 <= new_h < mask_2d.shape[0] and 0 <= new_w < mask_2d.shape[1]):
                         new_mask_2d[new_h, new_w] = mask_2d[h, w]
 
-        # 如果原始mask是4D，需要将结果重新reshape
+        # If original mask is 4D, need to reshape result
         if mask.dim() == 4:
             new_mask[0, 0] = new_mask_2d
         elif mask.dim() == 3:
@@ -1080,22 +1186,22 @@ class ContrastiveDefectGenerator:
 
     def move_mask_to_position_with_interpolation(self, mask: torch.Tensor, target_position: Tuple[int, int], progress: float):
         """
-        使用插值将mask移动到目标位置
+        Move mask to target position using interpolation
 
         Args:
-            mask: 原始mask
-            target_position: 目标位置 (y, x)
-            progress: 插值进度 (0.0 到 1.0)
+            mask: Original mask
+            target_position: Target position (y, x)
+            progress: Interpolation progress (0.0 to 1.0)
 
         Returns:
-            interpolated_mask: 插值后的mask
+            interpolated_mask: Interpolated mask
         """
-        # 获取原始位置
+        # Get original position
         mask_binary = mask > 0.5
         if not torch.any(mask_binary):
             return mask.clone()
 
-        # 处理4D tensor: [1, 1, H, W] -> 只取最后两个维度
+        # Handle 4D tensor: [1, 1, H, W] -> only take last two dimensions
         if mask_binary.dim() == 4:
             mask_binary = mask_binary.squeeze(0).squeeze(0)  # [H, W]
         elif mask_binary.dim() == 3:
@@ -1105,21 +1211,21 @@ class ContrastiveDefectGenerator:
         original_center_h = mask_h.float().mean().item()
         original_center_w = mask_w.float().mean().item()
 
-        # 计算目标中心位置
+        # Calculate target center position
         target_y, target_x = target_position
 
-        # 插值计算当前中心位置
+        # Interpolate to calculate current center position
         current_center_h = original_center_h + (target_y - original_center_h) * progress
         current_center_w = original_center_w + (target_x - original_center_w) * progress
 
-        # 计算偏移
+        # Calculate offset
         offset_y = int(current_center_h - original_center_h)
         offset_x = int(current_center_w - original_center_w)
 
-        # 创建新mask
+        # Create new mask
         new_mask = torch.zeros_like(mask)
 
-        # 处理4D tensor: 获取2D mask进行操作
+        # Handle 4D tensor: get 2D mask for operation
         if mask.dim() == 4:
             mask_2d = mask.squeeze(0).squeeze(0)  # [H, W]
             new_mask_2d = new_mask.squeeze(0).squeeze(0)  # [H, W]
@@ -1130,7 +1236,7 @@ class ContrastiveDefectGenerator:
             mask_2d = mask
             new_mask_2d = new_mask
 
-        # 应用偏移
+        # Apply offset
         for h in range(mask_2d.shape[0]):
             for w in range(mask_2d.shape[1]):
                 if mask_2d[h, w].item() > 0.5:
@@ -1139,7 +1245,7 @@ class ContrastiveDefectGenerator:
                     if (0 <= new_h < mask_2d.shape[0] and 0 <= new_w < mask_2d.shape[1]):
                         new_mask_2d[new_h, new_w] = mask_2d[h, w]
 
-        # 如果原始mask是4D，需要将结果重新reshape
+        # If original mask is 4D, need to reshape result
         if mask.dim() == 4:
             new_mask[0, 0] = new_mask_2d
         elif mask.dim() == 3:
@@ -1147,6 +1253,10 @@ class ContrastiveDefectGenerator:
 
         return new_mask
 
+    # ==============================================================================
+    # [Pipeline Orchestration]
+    # Coordinates the full 5-stage generation process
+    # ==============================================================================
     def generate_contrastive_defect(self,
                                   good_image_path: str,
                                   good_mask_path: str,
@@ -1169,67 +1279,65 @@ class ContrastiveDefectGenerator:
                                   ioa_threshold: float = 0.5,
                                   measure_inference_time: bool = False) -> Dict[str, str]:
         """
-        生成对比学习缺陷图像
+        Generate contrastive learning defect image
 
         Args:
-            good_image_path: 无缺陷图像路径
-            good_mask_path: 无缺陷图像物体mask路径
-            bad_image_paths: 有缺陷图像路径列表
-            bad_mask_paths: 有缺陷图像缺陷mask路径列表
-            prompt: 文本提示
-            num_inference_steps: 推理步数
-            r: 保留系数，控制前向扩散程度 (0-1)
-            learning_rate: 学习率
-            num_optimization_steps: 优化步数
-            optimization_interval: 优化间隔
-            feather_radius: 羽化半径，0表示无羽化
-            random_placement: 是否随机放置缺陷
-            placement_seed: 随机放置的种子
-            placement_range: 随机放置范围倍数 (0.5=小范围, 1.0=全范围, 2.0=大范围)
-            defect_variation: 缺陷变化程度 (0.0=完全相同, 1.0=高度变化)
-            variation_seed: 变化随机种子
-            output_dir: 输出目录
+            good_image_path: Non-defective image path
+            good_mask_path: Non-defective image object mask path
+            bad_image_paths: List of defective image paths
+            bad_mask_paths: List of defective image defect mask paths
+            prompt: Text prompt
+            num_inference_steps: Number of inference steps
+            r: Retention coefficient, controls forward diffusion degree (0-1)
+            learning_rate: Learning rate
+            num_optimization_steps: Number of optimization steps
+            optimization_interval: Optimization interval
+            feather_radius: Feather radius, 0 means no feathering
+            random_placement: Whether to randomly place defects
+            placement_seed: Random seed for placement
+            placement_range: Placement range multiplier (0.5=small range, 1.0=full range, 2.0=large range)
+            defect_variation: Defect variation degree (0.0=identical, 1.0=highly varied)
+            variation_seed: Variation random seed
+            output_dir: Output directory
 
         Returns:
-            file_paths: 生成文件路径字典
+            file_paths: Dictionary of generated file paths
         """
         print("[START] Starting contrastive defect generation...")
 
-        # 创建输出目录
+        # Create output directory
         os.makedirs(output_dir, exist_ok=True)
 
-        # 设置变化随机种子
+        # Set variation random seed
         if variation_seed is not None:
             torch.manual_seed(variation_seed)
             if torch.cuda.is_available():
                 torch.cuda.manual_seed(variation_seed)
 
-        # 初始化推理时间测量
+        # Initialize inference time measurement
         inference_times = []
         if measure_inference_time:
             import time
 
-        # 1. 加载图像和mask
+        # 1. Load images and masks
         print("[LOAD] Loading images and masks...")
         good_image, good_mask = self.load_image_and_mask(good_image_path, good_mask_path)
 
-        # 加载多张缺陷图像和mask
-        bad_images = []
-        bad_masks = []
-        print(f"   Loading {len(bad_image_paths)} defect images...")
-        for i, (bad_img_path, bad_mask_path) in enumerate(zip(bad_image_paths, bad_mask_paths)):
-            bad_img, bad_mask = self.load_image_and_mask(bad_img_path, bad_mask_path)
-            bad_images.append(bad_img)
-            bad_masks.append(bad_mask)
-            print(f"   [SUCCESS] Loaded defect image {i+1}: {os.path.basename(bad_img_path)}")
+        # Batch load multiple defect images and masks (optimized version)
+        print(f"   Batch loading {len(bad_image_paths)} defect images...")
+        bad_images, bad_masks = self.load_images_batch(bad_image_paths, bad_mask_paths)
+        print(f"   [SUCCESS] Loaded {len(bad_images)} defect images")
 
-        # 应用缺陷变化到mask
+        # Apply defect variation to masks
         if defect_variation > 0.0:
             print(f"   Applying defect variation (strength: {defect_variation:.2f})...")
             bad_masks = self.apply_defect_variation_to_masks(bad_masks, defect_variation)
 
-        # 特征对齐处理
+        # Feature alignment processing
         alignment_info = []
+        # ------------------------------------------------------------------
+        # [Stage 2: IoA-based Feature Alignment execution]
+        # ------------------------------------------------------------------
         if enable_feature_alignment:
             print(f"[ALIGN] Performing feature alignment (IoA threshold: {ioa_threshold:.2f})...")
             alignment_info = self.calculate_feature_alignment(bad_masks, good_mask, ioa_threshold)
@@ -1238,31 +1346,31 @@ class ContrastiveDefectGenerator:
                 if info['needs_alignment']:
                     print(f"      Target position: {info['target_position']}")
 
-        # 合并所有缺陷mask（用于后续处理）
+        # Combine all defect masks (for subsequent processing)
         combined_bad_mask = bad_masks[0].clone()
         for mask in bad_masks[1:]:
             combined_bad_mask = torch.maximum(combined_bad_mask, mask)
 
-        # 2. 解析prompt
+        # 2. Parse prompt
         print("[PARSE] Parsing prompts...")
 
-        # 处理prompt输入：支持单个prompt或每个缺陷图对应一个prompt
+        # Process prompt input: support single prompt or one prompt per defect image
         if individual_prompts is not None and len(individual_prompts) == len(bad_image_paths):
             print(f"   Using individual prompts for each defect image:")
             for i, ind_prompt in enumerate(individual_prompts):
                 print(f"   {i+1}. {ind_prompt}")
 
-            # 使用第一个prompt作为主prompt进行解析
+            # Use first prompt as main prompt for parsing
             main_prompt = individual_prompts[0]
             product_token, anomaly_tokens = self.parse_prompt(main_prompt)
 
-            # 解析所有individual prompts
+            # Parse all individual prompts
             all_anomaly_tokens = []
             for ind_prompt in individual_prompts:
                 _, tokens = self.parse_prompt(ind_prompt)
                 all_anomaly_tokens.extend(tokens)
 
-            # 去重并保持顺序
+            # Deduplicate while preserving order
             unique_anomaly_tokens = []
             for token in all_anomaly_tokens:
                 if token not in unique_anomaly_tokens:
@@ -1278,30 +1386,33 @@ class ContrastiveDefectGenerator:
         print(f"   Product token: {product_token}")
         print(f"   Anomaly tokens: {anomaly_tokens}")
 
-        # 3. 编码文本
+        # 3. Encode text
         print("[ENCODE] Encoding text...")
         product_embeddings, product_token_indices = self.encode_text(product_token)
         anomaly_text = " ".join(anomaly_tokens)
         anomaly_embeddings, anomaly_token_indices = self.encode_text(anomaly_text)
 
-        # 4. 编码图像
+        # 4. Encode images
+        # ------------------------------------------------------------------
+        # [Stage 1: VAE Encoding execution]
+        # ------------------------------------------------------------------
         print("[ENCODE] Encoding images...")
 
-        # 开始推理时间测量
+        # Start inference time measurement
         if measure_inference_time:
             inference_start_time = time.time()
             print("[TIME] Starting inference time measurement...")
 
-        # 编码无缺陷图像
-        good_latents_orig, _ = self.encode_images(good_image, bad_images[0])  # 只需要good_latents
+        # Encode non-defective image
+        good_latents_orig, _ = self.encode_images(good_image, bad_images[0])  # Only need good_latents
 
-        # 编码所有缺陷图像
+        # Encode all defect images
         bad_latents_list = []
         print(f"   Encoding {len(bad_images)} defect images...")
         for i, bad_img in enumerate(bad_images):
-            _, bad_latents = self.encode_images(good_image, bad_img)  # 只需要bad_latents
+            _, bad_latents = self.encode_images(good_image, bad_img)  # Only need bad_latents
 
-            # 应用缺陷变化到潜在表示
+            # Apply defect variation to latent representation
             if defect_variation > 0.0:
                 bad_latents = self.add_defect_variation(bad_latents, defect_variation)
                 print(f"   [SUCCESS] Encoded defect image {i+1} (with variation)")
@@ -1310,55 +1421,61 @@ class ContrastiveDefectGenerator:
 
             bad_latents_list.append(bad_latents)
 
-        # 选择第一张作为主要参考（用于初始化）
+        # Select first as primary reference (for initialization)
         primary_bad_latents = bad_latents_list[0]
 
-        # 5. 设置时间步
+        # 5. Set time steps
         self.pipe.scheduler.set_timesteps(num_inference_steps)
         timesteps = self.pipe.scheduler.timesteps
 
-        # 6. 计算部分前向扩散的停止点
+        # 6. Calculate stopping point for partial forward diffusion
+        # ------------------------------------------------------------------
+        # [Stage 3: Partial Forward Diffusion execution]
+        # ------------------------------------------------------------------
         t_stop = int(num_inference_steps * (1 - r))
         print(f"[FORWARD] Partial forward diffusion: stopping at step {t_stop} (r={r})")
 
-        # 7. 生成相同的噪声
+        # 7. Generate identical noise
         noise_shape = good_latents_orig.shape
         noise = torch.randn(noise_shape, device=self.device, dtype=good_latents_orig.dtype)
 
-        # 8. 部分前向扩散：只添加部分噪声
+        # 8. Partial forward diffusion: only add partial noise
         if t_stop > 0:
             timestep_start = timesteps[t_stop]
 
-            # 为每个缺陷图像添加不同的噪声（增加变化性）
+            # Add different noise for each defect image (increase variation)
             if defect_variation > 0.0:
-                # 为good_latents添加基础噪声
+                # Add base noise to good_latents
                 good_latents = self.add_noise(good_latents_orig, timestep_start, noise)
 
-                # 为每个bad_latents添加略有不同的噪声
+                # Add slightly different noise to each bad_latents
                 varied_bad_latents_list = []
                 for i, bad_lat in enumerate(bad_latents_list):
-                    # 生成略有不同的噪声
+                    # Generate slightly different noise
                     variation_noise = noise + torch.randn_like(noise) * defect_variation * 0.1
                     varied_bad_lat = self.add_noise(bad_lat, timestep_start, variation_noise)
                     varied_bad_latents_list.append(varied_bad_lat)
 
                 bad_latents_list = varied_bad_latents_list
-                bad_latents = bad_latents_list[0]  # 更新主要参考
+                bad_latents = bad_latents_list[0]  # Update primary reference
                 print(f"   Added varied noise up to timestep {timestep_start}")
             else:
                 good_latents = self.add_noise(good_latents_orig, timestep_start, noise)
                 bad_latents = self.add_noise(primary_bad_latents, timestep_start, noise)
                 print(f"   Added noise up to timestep {timestep_start}")
         else:
-            # 如果r=1，则从原始图像开始（无噪声）
+            # If r=1, start from original images (no noise)
             good_latents = good_latents_orig.clone()
             bad_latents = primary_bad_latents.clone()
             print("   Starting from original images (no noise)")
 
-        # 9. 反向扩散过程（从t_stop开始）
+        # 9. Reverse diffusion process (starting from t_stop)
+        # ------------------------------------------------------------------
+        # [Stage 4: Attention-Guided Reverse Optimization execution]
+        # ------------------------------------------------------------------
         print("[DIFFUSION] Starting reverse diffusion with contrastive optimization...")
 
-        # 只处理从t_stop到0的时间步
+        # Only process time steps from t_stop to 0
         active_timesteps = timesteps[t_stop:]
 
         for i, timestep in enumerate(active_timesteps):
@@ -1366,31 +1483,31 @@ class ContrastiveDefectGenerator:
             total_steps = len(active_timesteps)
             print(f"  Step {step_num}/{total_steps}: timestep {timestep} (from t_stop={t_stop})")
 
-            # 准备输入
+            # Prepare input
             good_latents = good_latents.detach().requires_grad_(True)
 
-            # 组合latents用于批处理
+            # Combine latents for batch processing
             latent_model_input = torch.cat([good_latents, bad_latents], dim=0)
 
-            # 组合文本嵌入
+            # Combine text embeddings
             text_embeddings = torch.cat([product_embeddings, anomaly_embeddings], dim=0)
 
-            # 为inpainting模型准备输入
-            # 需要将mask调整到latent空间并添加到输入中
+            # Prepare input for inpainting model
+            # Need to resize mask to latent space and add to input
             _, _, h, w = latent_model_input.shape
 
-            # 创建组合mask（good_mask用于good_latents，combined_bad_mask用于bad_latents）
+            # Create combined mask (good_mask for good_latents, combined_bad_mask for bad_latents)
             good_mask_latent = F.interpolate(good_mask.float(), size=(h, w), mode='nearest')
             bad_mask_latent = F.interpolate(combined_bad_mask.float(), size=(h, w), mode='nearest')
             combined_mask = torch.cat([good_mask_latent, bad_mask_latent], dim=0).to(latent_model_input.dtype)
 
-            # 创建masked latents（用于inpainting）
+            # Create masked latents (for inpainting)
             masked_latents = latent_model_input * (1 - combined_mask)
 
-            # 组合输入：latents + mask + masked_latents
+            # Combine input: latents + mask + masked_latents
             inpaint_input = torch.cat([latent_model_input, combined_mask, masked_latents], dim=1)
 
-            # UNet预测
+            # UNet prediction
             with torch.no_grad():
                 noise_pred = self.unet(
                     inpaint_input,
@@ -1399,31 +1516,31 @@ class ContrastiveDefectGenerator:
                     return_dict=False
                 )[0]
 
-            # 分离预测结果
+            # Separate prediction results
             noise_pred_good, noise_pred_bad = noise_pred.chunk(2)
 
-            # 优化步骤
+            # Optimization step
             if step_num % optimization_interval == 0:
                 print(f"    [OPTIMIZE] Optimizing attention at step {step_num}...")
 
-                # 获取当前步骤的实际mask位置
+                # Get actual mask position at current step
                 _, current_actual_masks = self.apply_defect_with_placement(
                     good_latents, bad_latents_list, bad_masks, good_mask, alignment_info, step_num, num_optimization_steps
                 )
 
-                # 对每张缺陷图片单独进行优化
+                # Optimize each defect image separately
                 for defect_idx in range(len(bad_masks)):
                     print(f"      Optimizing defect {defect_idx+1}/{len(bad_masks)}...")
 
-                    # 选择当前缺陷图像和实际使用的mask
+                    # Select current defect image and actually used mask
                     current_bad_latents = bad_latents_list[defect_idx]
-                    current_bad_mask = current_actual_masks[defect_idx]  # 使用实际位置的mask
+                    current_bad_mask = current_actual_masks[defect_idx]  # Use mask at actual position
 
                     for opt_step in range(num_optimization_steps):
-                        # 重新计算UNet输出以获取注意力图
+                        # Recalculate UNet output to get attention maps
                         latent_model_input = torch.cat([good_latents, current_bad_latents], dim=0)
 
-                        # 为inpainting模型准备输入
+                        # Prepare input for inpainting model
                         _, _, h, w = latent_model_input.shape
                         good_mask_latent = F.interpolate(good_mask.float(), size=(h, w), mode='nearest')
                         bad_mask_latent = F.interpolate(current_bad_mask.float(), size=(h, w), mode='nearest')
@@ -1438,10 +1555,10 @@ class ContrastiveDefectGenerator:
                             return_dict=False
                         )[0]
 
-                        # 提取注意力图
+                        # Extract attention maps
                         attention_maps = self.extract_attention_maps_from_unet(latent_model_input, text_embeddings)
 
-                        # 计算对比损失（使用实际位置的mask）
+                        # Compute contrastive loss (using mask at actual position)
                         contrastive_loss = self.compute_contrastive_loss(
                             attention_maps,
                             product_token_indices,
@@ -1453,29 +1570,32 @@ class ContrastiveDefectGenerator:
 
                         print(f"        Defect {defect_idx+1} step {opt_step+1}: Loss = {contrastive_loss.item():.6f}")
 
-                        # 反向传播
+                        # Backpropagation
                         if contrastive_loss.requires_grad:
                             contrastive_loss.backward(retain_graph=True)
 
-                            # 梯度裁剪
+                            # Gradient clipping
                             torch.nn.utils.clip_grad_norm_(good_latents, max_norm=1.0)
 
-                            # 更新good_latents
+                            # Update good_latents
                             with torch.no_grad():
                                 good_latents -= learning_rate * good_latents.grad
                                 good_latents.grad.zero_()
 
-            # 调度器步骤
+            # Scheduler step
             with torch.no_grad():
                 good_latents = self.pipe.scheduler.step(noise_pred_good, timestep, good_latents).prev_sample
                 bad_latents = self.pipe.scheduler.step(noise_pred_bad, timestep, bad_latents).prev_sample
 
-                # 转移缺陷特征（支持特征对齐）
+                # Transfer defect features (with feature alignment support)
                 good_latents, actual_bad_masks = self.apply_defect_with_placement(
                     good_latents, bad_latents_list, bad_masks, good_mask, alignment_info, i, num_inference_steps
                 )
 
-        # 8. 解码最终结果
+        # 8. Decode final result
+        # ------------------------------------------------------------------
+        # [Stage 5: Decoding execution]
+        # ------------------------------------------------------------------
         print("[DECODE] Decoding final result...")
         with torch.no_grad():
             final_image = self.vae.decode(good_latents / self.vae.config.scaling_factor).sample
@@ -1483,27 +1603,27 @@ class ContrastiveDefectGenerator:
             final_image = final_image.cpu().permute(0, 2, 3, 1).numpy()[0]
             final_image = (final_image * 255).astype(np.uint8)
 
-        # 结束推理时间测量
+        # End inference time measurement
         if measure_inference_time:
             inference_end_time = time.time()
             total_inference_time = inference_end_time - inference_start_time
             inference_times.append(total_inference_time)
             print(f"[TIME] Inference completed in {total_inference_time:.2f} seconds")
 
-        # 准备原始图像用于合并
+        # Prepare original image for blending
         original_good_image = good_image.cpu().permute(0, 2, 3, 1).numpy()[0]
         original_good_image = (original_good_image * 255).astype(np.uint8)
 
-        # 准备缺陷mask用于合并（与正常图mask取交集）
+        # Prepare defect mask for blending (intersection with normal image mask)
         print("[OPTIMIZE] Optimizing final mask with object mask intersection...")
 
-        # 将good_mask调整到与combined_bad_mask相同的尺寸
+        # Resize good_mask to same dimensions as combined_bad_mask
         good_mask_resized = F.interpolate(good_mask.float(), size=combined_bad_mask.shape[-2:], mode='nearest')
 
-        # 计算交集：只保留在正常图物体区域内的缺陷
+        # Calculate intersection: only keep defects within normal image object region
         optimized_mask = combined_bad_mask * good_mask_resized.squeeze(0).squeeze(0)
 
-        # 转换为numpy
+        # Convert to numpy
         defect_mask_np = optimized_mask.cpu().numpy()
         defect_mask_np = (defect_mask_np * 255).astype(np.uint8)
 
@@ -1511,23 +1631,23 @@ class ContrastiveDefectGenerator:
         print(f"   Optimized defect pixels: {torch.sum(optimized_mask > 0.5).item()}")
         print(f"   Removed pixels outside object: {torch.sum(combined_bad_mask > 0.5).item() - torch.sum(optimized_mask > 0.5).item()}")
 
-        # 准备参考缺陷图像（使用第一张缺陷图像）
+        # Prepare reference defect image (use first defect image)
         reference_bad_image = bad_images[0].cpu().permute(0, 2, 3, 1).numpy()[0]
         reference_bad_image = (reference_bad_image * 255).astype(np.uint8)
 
-        # 9. 创建合并图像（有羽化和无羽化版本）
+        # 9. Create blended images (feathered and non-feathered versions)
         print("[BLEND] Creating blend images...")
 
-        # 无羽化合并图像
+        # Non-feathered blended image
         print(f"   Creating non-feathered blend image...")
         non_feathered_image = self.blend_images_with_feathered_mask(
             original_image=original_good_image,
             generated_image=final_image,
             mask=defect_mask_np,
-            feather_radius=0  # 无羽化
+            feather_radius=0  # No feathering
         )
 
-        # 羽化合并图像（如果羽化半径大于0）
+        # Feathered blended image (if feather radius > 0)
         if feather_radius > 0:
             print(f"   Creating feathered blend image (radius={feather_radius})...")
             feathered_image = self.blend_images_with_feathered_mask(
@@ -1540,91 +1660,93 @@ class ContrastiveDefectGenerator:
             print("   Feather radius is 0, using non-feathered image as feathered version")
             feathered_image = non_feathered_image.copy()
 
-        # 10. 保存结果
+        # 10. Save results
         print("[SAVE] Saving results...")
         file_paths = {}
 
-        # 保存最终生成的缺陷图像
+        # Save final generated defect image
         final_image_pil = Image.fromarray(final_image)
         final_path = os.path.join(output_dir, "contrastive_defect_image.png")
         final_image_pil.save(final_path)
         file_paths["final_defect_image"] = final_path
 
-        # 保存无羽化合并图像
+        # Save non-feathered blended image
         non_feathered_pil = Image.fromarray(non_feathered_image)
         non_feathered_path = os.path.join(output_dir, "non_feathered_blend_image.png")
         non_feathered_pil.save(non_feathered_path)
         file_paths["non_feathered_blend_image"] = non_feathered_path
 
-        # 保存羽化合并图像
+        # Save feathered blended image
         feathered_pil = Image.fromarray(feathered_image)
         feathered_path = os.path.join(output_dir, "feathered_blend_image.png")
         feathered_pil.save(feathered_path)
         file_paths["feathered_blend_image"] = feathered_path
 
-        # 创建并保存对比网格图像
+        # Create and save comparison grid image
         print("[GRID] Creating comparison grid...")
         comparison_grid = self.create_comparison_grid(
             original_image=original_good_image,
             generated_image=final_image,
-            blended_image=feathered_image,  # 使用羽化版本作为主要展示
+            blended_image=feathered_image,  # Use feathered version as main display
             reference_bad_image=reference_bad_image,
             defect_mask=defect_mask_np,
-            non_feathered_image=non_feathered_image  # 添加无羽化版本
+            non_feathered_image=non_feathered_image  # Add non-feathered version
         )
         comparison_grid_pil = Image.fromarray(comparison_grid)
         comparison_path = os.path.join(output_dir, "comparison_grid.png")
         comparison_grid_pil.save(comparison_path)
         file_paths["comparison_grid"] = comparison_path
 
-        # 保存输入图像副本用于对比
+        # Save copy of input image for comparison
         good_image_pil = Image.open(good_image_path)
         good_copy_path = os.path.join(output_dir, "original_good_image.png")
         good_image_pil.save(good_copy_path)
         file_paths["original_good"] = good_copy_path
 
-        # 保存参考缺陷图像（使用第一张）
+        # Save reference defect image (use first one)
         bad_image_pil = Image.open(bad_image_paths[0])
         bad_copy_path = os.path.join(output_dir, "reference_bad_image.png")
         bad_image_pil.save(bad_copy_path)
         file_paths["reference_bad"] = bad_copy_path
 
-        # 保存所有缺陷图像副本
+        # Save copies of all defect images
         for i, bad_img_path in enumerate(bad_image_paths):
             bad_img_pil = Image.open(bad_img_path)
             bad_img_copy_path = os.path.join(output_dir, f"bad_image_{i+1}.png")
             bad_img_pil.save(bad_img_copy_path)
             file_paths[f"bad_image_{i+1}"] = bad_img_copy_path
 
-        # 保存mask副本
+        # Save mask copy
         good_mask_pil = Image.open(good_mask_path)
         good_mask_copy_path = os.path.join(output_dir, "good_object_mask.png")
         good_mask_pil.save(good_mask_copy_path)
         file_paths["good_mask"] = good_mask_copy_path
 
-        # 保存所有缺陷mask副本
+        # Save copies of all defect masks
         for i, bad_mask_path in enumerate(bad_mask_paths):
             bad_mask_pil = Image.open(bad_mask_path)
             bad_mask_copy_path = os.path.join(output_dir, f"bad_defect_mask_{i+1}.png")
             bad_mask_pil.save(bad_mask_copy_path)
             file_paths[f"bad_mask_{i+1}"] = bad_mask_copy_path
 
-        # 保存合并的缺陷mask
-        combined_mask_np = (combined_bad_mask.cpu().squeeze().numpy() * 255).astype(np.uint8)
-        combined_mask_pil = Image.fromarray(combined_mask_np)
+        # Save combined defect mask (using IoA-optimized mask, consistent with comparison_grid)
+        # Note: Using defect_mask_np instead of combined_bad_mask because defect_mask_np already intersected with object mask
+        # Ensure mask is 2D array
+        defect_mask_2d = defect_mask_np.squeeze() if len(defect_mask_np.shape) > 2 else defect_mask_np
+        combined_mask_pil = Image.fromarray(defect_mask_2d)
         combined_mask_path = os.path.join(output_dir, "combined_defect_mask.png")
         combined_mask_pil.save(combined_mask_path)
         file_paths["combined_defect_mask"] = combined_mask_path
 
-        # 提取注意力热力图
+        # Extract attention heatmaps
         if extract_attention and defect_types:
             print("[ATTENTION] Extracting attention heatmaps...")
             try:
-                # 解析prompt中的anomaly tokens
+                # Parse anomaly tokens from prompt
                 prompt_parts = prompt.split()
                 anomaly_tokens = []
 
-                # 从prompt中提取可能的anomaly tokens
+                # Extract possible anomaly tokens from prompt
                 product_tokens = ["bottle", "cable", "capsule", "carpet", "grid", "hazelnut",
                                 "leather", "metal", "nut", "pill", "screw", "tile",
                                 "toothbrush", "transistor", "wood", "zipper"]
@@ -1636,10 +1758,10 @@ class ContrastiveDefectGenerator:
                 if not anomaly_tokens:
                     anomaly_tokens = defect_types
 
-                # 生成实验名称
+                # Generate experiment name
                 experiment_name = f"exp_{len(bad_image_paths)}defects"
 
-                # 提取注意力热力图
+                # Extract attention heatmaps
                 heatmap_path = extract_attention_heatmaps(
                     self, prompt, anomaly_tokens, defect_types,
                     experiment_name, output_dir
@@ -1651,7 +1773,7 @@ class ContrastiveDefectGenerator:
             except Exception as e:
                 print(f"[WARNING] Could not extract attention heatmaps: {e}")
 
-        # 保存推理时间
+        # Save inference time
         if measure_inference_time and inference_times:
             time_file_path = os.path.join(output_dir, "inference_times.txt")
             with open(time_file_path, 'w') as f:
