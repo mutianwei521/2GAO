@@ -10,6 +10,11 @@
 - [Google Drive](https://drive.google.com/file/d/1FEvOEMTT9A-Ykt7jTK17nSAblMLfGHZa/view)
 - [/outputsResults](https://github.com/mutianwei521/2GAO/tree/main/outputsResults)
 
+**原始图像数据链接 (放入对应文件夹即可）**
+- MVTec-AD dataset: [Google Drive](https://drive.google.com/file/d/1BZzy7apJ91cr33-_KG01_Qh-jAeN_zVg/view?usp=drive_link)
+- VISA dataset: [Google Drive](https://drive.google.com/file/d/1jaKbzgfHThh7AGqfYQvdphyZfxERbHmq/view?usp=drive_link)
+- Concrete crack dataset: [Google Drive](https://drive.google.com/file/d/1ysoPO7OU6GQm2tVTrXvRP0BKX236Aype/view?usp=drive_link)
+
 ### 🏗️ 网络架构
 ![Overall Network Architecture](paper/2gao_03.png)
 *图：整体框架包含五个阶段：(1) VAE编码，(2) IoA对齐，(3) 前向扩散，(4) 注意力引导反向优化，以及 (5) 解码。*
@@ -356,5 +361,6 @@ python test/evaluate_mvtec_metrics.py \
 ## 📜 许可证
 
 MIT License
+
 
 
