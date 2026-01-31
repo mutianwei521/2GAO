@@ -15,6 +15,9 @@
 *图：整体框架包含五个阶段：(1) VAE编码，(2) IoA对齐，(3) 前向扩散，(4) 注意力引导反向优化，以及 (5) 解码。*
 
 ---
+### 🏗️ 结果展示
+![Result Show](paper/mvtec_qual_group1_1defect.png)
+*图：工业物体的原始图像、参考图像以及合成缺陷图像（2-GAO方法生成）综合对比：（a）瓶子，（b）电缆，（c）胶囊，（d）地毯。*
 
 ## 🔧 系统要求
 
@@ -353,4 +356,5 @@ python test/evaluate_mvtec_metrics.py \
 ## 📜 许可证
 
 MIT License
+
 
