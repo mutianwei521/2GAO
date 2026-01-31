@@ -15,7 +15,11 @@ This system is a contrastive learning defect generation tool based on Stable Dif
 *Figure: The overall framework consists of five stages: (1) VAE Encoding, (2) IoA Alignment, (3) Forward Diffusion, (4) Attention-Guided Reverse Optimization, and (5) Decoding.*
 
 ---
+### 📊 Result Show
+![Result Show](paper/mvtec_qual_group1_1defect.png)
+*Figure: Comprehensive comparison of original, reference, and synthetically defect images of 4 industrial object categories using 2-GAO: (a) bottle, (b) cable, (c) capsule, and (d) carpet.*
 
+---
 ## 🔧 System Requirements
 
 ### Hardware
