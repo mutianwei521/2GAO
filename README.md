@@ -10,6 +10,11 @@ This system is a contrastive learning defect generation tool based on Stable Dif
 - [Google Drive](https://drive.google.com/file/d/1FEvOEMTT9A-Ykt7jTK17nSAblMLfGHZa/view)
 - [/outputsResults](https://github.com/mutianwei521/2GAO/tree/main/outputsResults)
 
+**Link to original image data (just place it in the corresponding folder)**
+- MVTec-AD dataset: [Google Drive](https://drive.google.com/file/d/1BZzy7apJ91cr33-_KG01_Qh-jAeN_zVg/view?usp=drive_link)
+- VISA dataset: [Google Drive](https://drive.google.com/file/d/1jaKbzgfHThh7AGqfYQvdphyZfxERbHmq/view?usp=drive_link)
+- Concrete crack dataset: [Google Drive](https://drive.google.com/file/d/1ysoPO7OU6GQm2tVTrXvRP0BKX236Aype/view?usp=drive_link)
+
 ### 🏗️ Network Architecture
 ![Overall Network Architecture](paper/2gao_03.png)
 *Figure: The overall framework consists of five stages: (1) VAE Encoding, (2) IoA Alignment, (3) Forward Diffusion, (4) Attention-Guided Reverse Optimization, and (5) Decoding.*
