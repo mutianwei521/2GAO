@@ -11,7 +11,7 @@
 - [/outputsResults](https://github.com/mutianwei521/2GAO/tree/main/outputsResults)
 
 ### 🏗️ 网络架构
-![Overall Network Architecture](paper/figures/2gao_03.png)
+![Overall Network Architecture](paper/2gao_03.png)
 *图：整体框架包含五个阶段：(1) VAE编码，(2) IoA对齐，(3) 前向扩散，(4) 注意力引导反向优化，以及 (5) 解码。*
 
 ---
@@ -353,3 +353,4 @@ python test/evaluate_mvtec_metrics.py \
 ## 📜 许可证
 
 MIT License
+
