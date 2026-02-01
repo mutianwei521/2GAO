@@ -15,8 +15,8 @@ This system is a contrastive learning defect generation tool based on Stable Dif
 - VISA dataset: [Google Drive](https://drive.google.com/file/d/1jaKbzgfHThh7AGqfYQvdphyZfxERbHmq/view?usp=drive_link)
 - Concrete crack dataset: [Google Drive](https://drive.google.com/file/d/1ysoPO7OU6GQm2tVTrXvRP0BKX236Aype/view?usp=drive_link)
 
-**paper**
-- waiting for publishing
+**Paper**
+- Waiting for publishing
 
 ### 🏗️ Network Architecture
 ![Overall Network Architecture](paper/2gao_03.png)
