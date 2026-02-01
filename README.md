@@ -1,6 +1,6 @@
 **English** | [中文](README_CN.md)
 
-# 2-GAO: Contrastive Learning Defect Generation System
+# 2-GAO: Spatial-Semantic Consistent Industrial Defect Synthesis with Fine-tuning Free Attention Optimization
 
 ## 📋 System Overview
 
