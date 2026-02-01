@@ -1,6 +1,6 @@
 [English](README.md) | **中文**
 
-# 2-GAO：对比学习缺陷生成系统
+# 2-GAO：基于对比优化的工业缺陷生成系统
 
 ## 📋 系统概述
 
@@ -361,6 +361,7 @@ python test/evaluate_mvtec_metrics.py \
 ## 📜 许可证
 
 MIT License
+
 
 
 
