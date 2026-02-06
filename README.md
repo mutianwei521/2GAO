@@ -369,7 +369,7 @@ python test/evaluate_mvtec_metrics.py \
 The authors express deep gratitude to Dr. Enyang Gao, General Manager of Deep-Sea 3D Vision Co., Ltd., whose invaluable guidance and mentorship made this research possible. The name “2-GAO” serves as a tribute to Dr. Gao’s contributions to the field of computer vision and his continued support of our research endeavors.
 
 <img src="paper/7d36d1c9cd551d9554675c3f3528f0c6.jpg" alt="GYN" width="25%"/>
-_Figure: Dr.Gao's portrait._
+Figure: Dr.Gao's portrait.
 
 ---
 
