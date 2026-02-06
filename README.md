@@ -1,6 +1,6 @@
 **English** | [中文](README_CN.md)
 
-# 2-GAO: Spatial-Semantic Consistent Industrial Defect Synthesis with Fine-tuning Free Attention Optimization
+# 2-GAO: Spatial-Semantic Consistent Industrial Defect Synthesis via Training-Free Latent Optimization
 
 ## 📋 System Overview
 
