@@ -2,7 +2,7 @@
 
 # 2-GAO: Spatial-Semantic Consistent Industrial Defect Synthesis via Training-Free Latent Optimization
 
-Guangzhou Institute of Industrial Intelligence
+Tianwei Mu, Guangzhou Institute of Industrial Intelligence
 
 ## 📋 System Overview
 
