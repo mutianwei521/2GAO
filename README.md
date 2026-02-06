@@ -2,6 +2,8 @@
 
 # 2-GAO: Spatial-Semantic Consistent Industrial Defect Synthesis via Training-Free Latent Optimization
 
+Guangzhou Institute of Industrial Intelligence
+
 ## 📋 System Overview
 
 This system is a contrastive learning defect generation tool based on Stable Diffusion. It generates defects on defect-free images guided by defective samples, leveraging attention mechanism optimization and feature alignment.
